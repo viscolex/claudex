@@ -1,4 +1,4 @@
-# Claudex 2.6
+# Claudex
 
 Claude and Codex, working together from Claude Code. Claudex brings Codex
 (OpenAI's coding agent, on your own ChatGPT plan) into Claude Code:
@@ -42,7 +42,7 @@ Codex only runs when you ask for it: from the pane (every start has a confirm st
 
 ## Upgrading
 
-From Claudex 2.5: replace the `~/.claude/mods/claudex` folder with this one and restart Claude Code.
+From an earlier Claudex: replace the `~/.claude/mods/claudex` folder with this one (or `git pull` in it) and restart Claude Code.
 
 ### From the Codex mod (1.x, 2.0 or 2.1)
 
@@ -66,25 +66,6 @@ node scripts/smoke.mjs
 ```
 
 It checks, against your real Codex, that it starts, that you are signed in, which models it offers, and that it still accepts everything Claudex sends. No model runs, so it costs nothing. `node scripts/smoke.mjs --turn` also runs one tiny turn (a few thousand tokens of your plan). Each line says PASS or FAIL.
-
-## What's new in 2.6
-
-- **Your own Now and Next**: in a conversation, send Codex a note now, or queue it for its next round (you see the queue, and can take things back out); and answer the questions Codex asked without waiting, right where they show.
-- **Fixes you apply are checked, not assumed**: applying a fix leaves its findings open, marked "fix applied", until Claude or a Codex recheck confirms them (one tap if you checked yourself).
-- **Codex's own words on the band**: while it writes, its latest sentence is the headline.
-- **Claude at work too**: while Codex works, Claude's own steps (edits, commands, reads) show on Claude's side of the stage, and Clawd types along.
-- **The stage everywhere**: a drawn timeline of each conversation, the job board, the band at rest, usage meters, new status chips, and starters when a tab is empty. Boop Clawd or Codex right on the hero.
-- **Motion you choose**: Calm (the default: a burst of motion when something happens, then still), Full, or Still, in Usage & settings. Calm costs about a tenth of Full.
-- **Never stuck in the queue**: runs start in order, two at a time, and a third that has to wait never hangs.
-
-## What's new in 2.5
-
-- **Claudex**: the Codex mod, renamed. Claude and Codex are still Claude and Codex.
-- **The stage**: the band, the cards and the pane share one new look. Whoever has the move stands in the spotlight; each step Codex takes (a file read, a search, a command, an edit) lands on the floor as a chip; a result drops its findings on the floor in their colours, and they trade a line about it. The pane's sections are tiles you can click or step through with the arrow keys.
-- **Questions that don't block**: Codex can ask Claude something and carry on with what does not depend on the answer. The band shows the open question; Claude's answer reaches Codex at its next step, or starts its next round if Codex has finished.
-- **Now or next**: a note to Codex either steers what it is doing now, or waits for its next round, which then starts by itself as soon as the current one ends. A stopped round drops what was queued for it.
-- **The Codex mascot ships with Claudex**, so it shows even where the Codex app's own art cannot be read.
-- **Truer counts**: "needs you" counts what the list shows (this chat's, or all chats').
 
 ## Optional, per project
 

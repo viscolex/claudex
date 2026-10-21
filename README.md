@@ -14,7 +14,7 @@ Codex on your ChatGPT plan, brought into Claude Code, live in the chat.
 [![platforms](https://img.shields.io/badge/platform-macOS_%7C_Windows-555?style=flat-square)](#requirements)
 [![node](https://img.shields.io/badge/node-%E2%89%A520-5FA04E?style=flat-square&logo=nodedotjs&logoColor=white)](https://nodejs.org)
 
-[What it does](#what-it-does) · [New in 2.6](#new-in-26) · [Examples](#examples) · [Install](#install) · [Settings](#settings) · [FAQ](#faq)
+[What it does](#what-it-does) · [Conversations](#every-conversation-in-full) · [Examples](#examples) · [Install](#install) · [Settings](#settings) · [FAQ](#faq)
 
 <br>
 
@@ -150,17 +150,43 @@ The same scenes show up as live cards in the chat. Motion is up to you: **Calm**
 moves when something happens and then rests, **Full** keeps moving, and **Still** stops all
 motion except the clocks.
 
-## New in 2.6
+## Every conversation, in full
 
-- **Your own Now and Next**: send Codex a note now, or queue it for its next round, and answer its questions right where they show.
-- **Fixes you apply are checked, not assumed**: findings stay open as "fix applied" until a recheck confirms them.
-- **Codex's own words on the band**: while it writes, its latest sentence is the headline.
-- **Claude at work too**: Claude's own edits, commands and reads show on its side of the stage.
-- **The stage everywhere**: on the band, the cards, the job board, the usage meters and the pane. Boop Clawd or Codex on the pane's stage.
-- **Motion you choose**: Calm, Full or Still. Calm uses about a tenth of the work Full does.
-- **Never stuck in the queue**: runs start in order, two at a time.
+Open any conversation in the pane (`/claudex`, then a row under **Talk** or **Tasks**) to see
+the whole thing: what was asked, what each side found, how they argued, and what they settled on.
 
-The full release notes are in [INSTALL.md](INSTALL.md#whats-new-in-26).
+<div align="center">
+
+<img src="docs/images/conversation-top.png" alt="The top of a joint review in the Claudex pane: its title, a drawn timeline of every move, and the stage showing Claude and Codex agreeing" width="526">
+
+<details>
+<summary><b>See the whole conversation</b> (a tall picture)</summary>
+<br>
+<img src="docs/images/conversation.png" alt="A whole joint review in the Claudex pane: the timeline, the findings grouped by who found them, the agreed solution, and every round between Claude and Codex" width="526">
+</details>
+
+</div>
+
+From top to bottom:
+
+- **The timeline.** Every move, drawn as a path between two lanes: Claude's on top, Codex's
+  below. You see who did what, in order: found 3, triaged, sent 2 findings, replied, agreed on a fix.
+- **How it ended**, on the stage: approved, changes needed or, in a joint review, agreed.
+- **The findings.** A joint review groups them by who found them: *both found*, *only Claude*,
+  *only Codex* and *still argued*. Each one shows its severity, a link that opens the file at the
+  line, and what the other side made of it (*agrees*, *refines*, *is unsure*). Tap ▸ to open one:
+  its detail, the suggested fix, the replies from each round, and buttons to have Claude or Codex
+  fix it, or to dismiss it.
+- **The agreed solution** in full, and what to do next: **Have Claude handle it**,
+  **Copy as Markdown** or **Share with Claude**.
+- **Every round, in order.** What Claude sent and what Codex answered, the files it read, the
+  searches it ran, how long it took, and its tokens (and how many were cached). **What Codex did**
+  lists each step. Where Claude disputed a finding, Codex's answer says whether it *holds*,
+  *concedes* or *refines* it.
+
+While a round runs, the same page shows it live: send Codex a note now, queue one for its next
+round, or answer a question it asked. A task's page shows each file it changed with its diff,
+and an **Undo** once it's applied.
 
 ## Examples
 
@@ -307,8 +333,8 @@ run one tiny real turn.
 
 > [!TIP]
 > To update later, run `git pull` in `~/.claude/mods/claudex` and restart Claude Code.
-> [INSTALL.md](INSTALL.md) covers upgrading from the older Codex mod, where Claudex keeps its
-> files, and the release notes.
+> [INSTALL.md](INSTALL.md) covers upgrading from the older Codex mod and where Claudex keeps its
+> files.
 
 ## Settings
 
@@ -364,7 +390,7 @@ scripts/                     Node helpers: Codex app server, tasks, worktrees, i
 schemas/                     JSON schemas for Codex's structured replies
 types/index.d.ts             the mod API types
 tests/                       tests, run with Claude Code's mod test runner
-docs/images/                 README images: the SVGs are drawn by hooks/duet.ts
+docs/images/                 README images: the SVGs are drawn by hooks/duet.ts, the PNGs are the pane
 ```
 
 ## License
