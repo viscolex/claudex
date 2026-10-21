@@ -11429,7 +11429,7 @@ export const register: Register = (on, options) => {
               ? `Art style. This project's styles: ${styleIds.join(', ')} (their own prompt and scene guidance are added). Any other text is used as style words.`
               : 'Art style, as words.',
           },
-          preset: { type: 'string', enum: ['none', 'cutout', 'plate'], description: 'cutout: the subject alone on flat magenta, for keying out; plate: the place empty of characters (pass the scene as a reference).' },
+          preset: { type: 'string', enum: ['none', 'cutout', 'plate'], description: 'cutout: the subject alone on a transparent background (a real alpha channel); when Codex cannot paint transparency it uses flat magenta and the mod keys it out into a transparent PNG; plate: the place empty of characters (pass the scene as a reference).' },
           count: { type: 'integer', minimum: 1, maximum: 4, description: 'Variations painted in parallel. Default 1.' },
           wait: { type: 'boolean', description: 'Wait for the files (about a minute). Default false.' },
           go_ahead: { type: 'boolean', description: 'The user agreed to go ahead after a warning that Codex usage is at 90% or more.' },
