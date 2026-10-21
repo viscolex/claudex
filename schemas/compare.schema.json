@@ -1,0 +1,145 @@
+{
+  "type": "object",
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": [
+        "approve",
+        "approve_with_nits",
+        "changes_needed",
+        "rethink",
+        "answer"
+      ]
+    },
+    "summary": {
+      "type": "string"
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": [
+              "high",
+              "medium",
+              "low"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "file": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "line": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "detail": {
+            "type": "string"
+          },
+          "suggestion": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "severity",
+          "title",
+          "file",
+          "line",
+          "detail",
+          "suggestion"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "responses": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "finding": {
+            "type": "string"
+          },
+          "position": {
+            "type": "string",
+            "enum": [
+              "concede",
+              "hold",
+              "refine"
+            ]
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "finding",
+          "position",
+          "text"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "answer": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "matches": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "claude": {
+            "type": "string"
+          },
+          "same_as": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "position": {
+            "type": "string",
+            "enum": [
+              "agree",
+              "disagree",
+              "refine"
+            ]
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "claude",
+          "same_as",
+          "position",
+          "text"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "verdict",
+    "summary",
+    "findings",
+    "responses",
+    "answer",
+    "matches"
+  ],
+  "additionalProperties": false
+}

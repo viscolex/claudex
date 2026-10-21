@@ -1,0 +1,19 @@
+{
+  "type": "object",
+  "properties": {
+    "summary": { "type": "string" },
+    "changes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": { "file": { "type": "string" }, "what": { "type": "string" } },
+        "required": ["file", "what"],
+        "additionalProperties": false
+      }
+    },
+    "tests": { "type": ["string", "null"] },
+    "notes": { "type": ["string", "null"] }
+  },
+  "required": ["summary", "changes", "tests", "notes"],
+  "additionalProperties": false
+}

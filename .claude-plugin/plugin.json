@@ -1,0 +1,31 @@
+{
+  "name": "claudex",
+  "version": "2.6.0",
+  "description": "Claudex: Claude and Codex, working together from Claude Code. Reviews and second opinions, tasks in their own worktree, and pictures, with live cards in the chat and one Claudex pane.",
+  "author": {
+    "name": "Andrej Safranovic"
+  },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "model": {
+      "type": "string",
+      "title": "Codex model",
+      "description": "The Codex model consulted by default.",
+      "default": "gpt-6.1-sol"
+    },
+    "effort": {
+      "type": "string",
+      "title": "Codex reasoning effort",
+      "description": "How hard Codex thinks by default.",
+      "default": "high",
+      "options": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra"
+      ]
+    }
+  }
+}
