@@ -14,11 +14,11 @@ Codex on your ChatGPT plan, brought into Claude Code, live in the chat.
 [![platforms](https://img.shields.io/badge/platform-macOS_%7C_Windows-555?style=flat-square)](#requirements)
 [![node](https://img.shields.io/badge/node-%E2%89%A520-5FA04E?style=flat-square&logo=nodedotjs&logoColor=white)](https://nodejs.org)
 
-[What it does](#what-it-does) · [Examples](#examples) · [Install](#install) · [Settings](#settings) · [FAQ](#faq)
+[What it does](#what-it-does) · [New in 2.6](#new-in-26) · [Examples](#examples) · [Install](#install) · [Settings](#settings) · [FAQ](#faq)
 
 <br>
 
-<img src="docs/images/band-hero.svg" alt="The Claudex band above the prompt: Codex has a question for Claude during a code review" width="900">
+<img src="docs/images/band-working.svg" alt="The Claudex band above the prompt: Codex reads the code during a review, each step it takes landing as a chip on the stage" width="860">
 
 </div>
 
@@ -77,10 +77,28 @@ Codex can tell Claude what it finds, or ask a question and either wait or carry 
 </td>
 <td valign="top">
 
-### 🎨 Pictures, plans, bugs, visual reviews
-Codex's image model paints PNGs: cut-outs, backgrounds and up to four variations. It also
-checks plans before you build, hunts bugs from a log, and reviews desktop and phone
-screenshots of a page.
+### 🎨 Pictures
+Codex's image model paints PNGs, up to four variations at once. **Cut-outs come with a real
+transparent background** (an alpha channel) straight from Codex; if its image tool can't do
+that, it paints on flat magenta and Claudex keys it out for you. It also paints empty backdrops
+("plates") and edits pictures you give it.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+### ✅ Fixes checked, not assumed
+Applying a fix leaves its findings open, marked **fix applied**, until Claude or a Codex
+recheck confirms them. One tap closes them if you checked yourself.
+
+</td>
+<td valign="top">
+
+### 🧭 Plans, bugs, visual reviews and Codex's browser
+Codex checks plans before you build, hunts bugs from a log, and reviews desktop and phone
+screenshots of a page. When it wants to open a site in its own browser, you choose
+**Allow once**, **Always allow** or **Deny**.
 
 </td>
 </tr>
@@ -98,32 +116,51 @@ Codex only runs when you ask for it. Claude never calls it on its own initiative
 
 <br><br>
 
-<img src="docs/images/stage-review.svg" alt="A finished review on the stage: three findings, Claude agrees with two" width="560">
+<img src="docs/images/band-asking.svg" alt="The band while Codex asks Claude a question mid-review, with the question in large type" width="860">
 
-<sub><b>A review lands.</b> Codex's findings land on the floor in their severity colours, and Claude says where it agrees.</sub>
-
-<br><br>
-
-<img src="docs/images/stage-asking.svg" alt="Codex asks Claude a question mid-run while Clawd ponders" width="560">
-
-<sub><b>A question mid-run.</b> Codex asks Claude something and carries on with what doesn't depend on the answer.</sub>
+<sub><b>A question mid-run.</b> Codex asks Claude something. It either waits for the answer or carries on with what doesn't depend on it.</sub>
 
 <br><br>
 
-<img src="docs/images/stage-task.svg" alt="A finished Codex task, ready to apply, with its diff size" width="560">
+<img src="docs/images/result-changes.svg" alt="A review result: Changes needed, with one high, two medium and one low finding" width="860">
 
-<sub><b>A task is ready.</b> Codex built it in its own worktree, and Claude reads the diff before anything reaches your files.</sub>
+<sub><b>A review lands.</b> Codex's findings drop onto the stage in their severity colours, and the two trade a line about them.</sub>
 
 <br><br>
 
-<img src="docs/images/band-result.svg" alt="The band when a build loop's result is applied" width="900">
+<img src="docs/images/band-task-check.svg" alt="The band while Claude checks a task Codex built: two files changed, +92 −6" width="860">
 
-<sub><b>It's in your files.</b> The band celebrates when a build loop's result is applied.</sub>
+<sub><b>Claude's turn.</b> Codex built the task in its own worktree; Claude checks the diff before anything reaches your files.</sub>
+
+<br><br>
+
+<img src="docs/images/result-approved.svg" alt="A review result: Approved, all findings resolved, Codex jumping for joy" width="860">
+
+<sub><b>Approved.</b> The recheck closes the loop.</sub>
+
+<br><br>
+
+<img src="docs/images/pane-hero.svg" alt="The top of the Claudex pane: Codex is reviewing, two running, one needs you, 12% of the 5-hour usage" width="560">
+
+<sub><b>The Claudex pane</b> (<code>/claudex</code>): every conversation, task, job and picture, plus your Codex usage, with the stage on top.</sub>
 
 </div>
 
-All of this also shows up as live cards in the chat, and in the **Claudex pane** (`/claudex`)
-with every conversation, task, picture and your Codex usage.
+The same scenes show up as live cards in the chat. Motion is up to you: **Calm** (the default)
+moves when something happens and then rests, **Full** keeps moving, and **Still** stops all
+motion except the clocks.
+
+## New in 2.6
+
+- **Your own Now and Next**: send Codex a note now, or queue it for its next round, and answer its questions right where they show.
+- **Fixes you apply are checked, not assumed**: findings stay open as "fix applied" until a recheck confirms them.
+- **Codex's own words on the band**: while it writes, its latest sentence is the headline.
+- **Claude at work too**: Claude's own edits, commands and reads show on its side of the stage.
+- **The stage everywhere**: on the band, the cards, the job board, the usage meters and the pane. Boop Clawd or Codex on the pane's stage.
+- **Motion you choose**: Calm, Full or Still. Calm uses about a tenth of the work Full does.
+- **Never stuck in the queue**: runs start in order, two at a time.
+
+The full release notes are in [INSTALL.md](INSTALL.md#whats-new-in-26).
 
 ## Examples
 
@@ -212,6 +249,7 @@ When it's done, queue up a note for Codex to also add tests.
 
 ```text
 Ask Codex for three variations of a cosy pixel-art kitchen, wide format.
+Then paint the chef as a cut-out on a transparent background.
 ```
 </details>
 
@@ -233,7 +271,7 @@ Stop Codex.
 | **git** | Any recent version |
 
 Optional, per project: **Playwright** (`npm i -D playwright`) plus Chrome or Edge for visual
-reviews, and **sharp** for picture cut-outs and WebP copies.
+reviews, and **sharp** for WebP copies of pictures. Cut-outs need nothing extra.
 
 ## Install
 
@@ -326,7 +364,7 @@ scripts/                     Node helpers: Codex app server, tasks, worktrees, i
 schemas/                     JSON schemas for Codex's structured replies
 types/index.d.ts             the mod API types
 tests/                       tests, run with Claude Code's mod test runner
-docs/images/                 README images: the SVGs are drawn by hooks/art.ts
+docs/images/                 README images: the SVGs are drawn by hooks/duet.ts
 ```
 
 ## License

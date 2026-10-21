@@ -89,7 +89,7 @@ It checks, against your real Codex, that it starts, that you are signed in, whic
 ## Optional, per project
 
 - **Visual reviews** (screenshots of a page) need Playwright in the project (`npm i -D playwright`), plus Chrome or Edge.
-- **Picture cut-outs and WebP copies** need `sharp` in the project. Most web projects have it already.
+- **WebP copies of pictures** need `sharp` in the project. Most web projects have it already. Cut-outs need nothing extra: Codex paints them transparent, or the mod keys out the magenta itself.
 
 ## Where things live
 
