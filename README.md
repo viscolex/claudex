@@ -298,9 +298,9 @@ Claudex is free. Codex runs on your own ChatGPT plan's Codex quota, and the smok
 <summary><b>Where is the Codex mascot from?</b></summary>
 
 The Codex companion on the stage is cut from the Codex desktop app's own artwork on your
-computer, so it always matches your installed version. This repo doesn't include those
-images. With only the Codex CLI installed, everything still works; the stage just shows
-Claude's side without the mascot.
+computer, so it always matches your installed version. The mod doesn't ship that artwork
+itself (it appears here only in the README pictures). With only the Codex CLI installed,
+everything still works; the stage just shows Claude's side without the mascot.
 </details>
 
 <details>
