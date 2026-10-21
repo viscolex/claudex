@@ -10157,7 +10157,8 @@ function Outcome($: Engine, el: Elements, surface: string, list: Consult[], thre
         </Text>
         <Text dimColor>{facts.join(' · ')}</Text>
       </Box>
-      {result.summary && <Text wrap="wrap">{result.summary}</Text>}
+      {/* A joint review's agreed solution is drawn in full just above: not twice. */}
+      {result.summary && !(joint && head.agreed) && <Text wrap="wrap">{result.summary}</Text>}
       <Box flexDirection="row" gap={1} flexWrap="wrap">
         {!busy && found.some(f => f.state === 'open') && (
           <Button
