@@ -92,6 +92,12 @@ Codex only runs when you ask for it. Claude never calls it on its own initiative
 
 <div align="center">
 
+<img src="docs/images/band-idle.png" alt="The Claudex band at rest above the Claude Code prompt, with Clawd, the Codex mascot, a usage ring and an Open Claudex button" width="900">
+
+<sub><b>Always there, never in the way.</b> At rest, the band sits above the prompt with your Codex usage and a way into the pane. Nothing runs until you start it.</sub>
+
+<br><br>
+
 <img src="docs/images/stage-review.svg" alt="A finished review on the stage: three findings, Claude agrees with two" width="560">
 
 <sub><b>A review lands.</b> Codex's findings land on the floor in their severity colours, and Claude says where it agrees.</sub>
@@ -320,7 +326,7 @@ scripts/                     Node helpers: Codex app server, tasks, worktrees, i
 schemas/                     JSON schemas for Codex's structured replies
 types/index.d.ts             the mod API types
 tests/                       tests, run with Claude Code's mod test runner
-docs/images/                 README images, drawn by hooks/art.ts
+docs/images/                 README images: the SVGs are drawn by hooks/art.ts
 ```
 
 ## License
