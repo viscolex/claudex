@@ -13,7 +13,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { findCodex } from './lib.mjs'
+import { VERSION, findCodex } from './lib.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const args = process.argv.slice(2)
@@ -87,7 +87,7 @@ async function main() {
   })
   if (results.some(r => !r.ok)) return
 
-  const hello = await server.request('initialize', { clientInfo: { name: 'claudex_smoke', title: 'Claudex (smoke test)', version: '2.6.0' }, capabilities: { experimentalApi: true } })
+  const hello = await server.request('initialize', { clientInfo: { name: 'claudex_smoke', title: 'Claudex (smoke test)', version: VERSION }, capabilities: { experimentalApi: true } })
   if (hello.error) return fail('initialize', hello.error.message)
   server.notify('initialized')
   pass('initialize', hello.result?.userAgent ?? '')

@@ -3,13 +3,22 @@
 // the same on Windows and macOS; where the systems differ, each takes its own
 // built-in tools.
 import { spawnSync } from 'node:child_process'
-import { existsSync, lstatSync, symlinkSync, unlinkSync } from 'node:fs'
+import { existsSync, lstatSync, readFileSync, symlinkSync, unlinkSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 export const windows = process.platform === 'win32'
 export const mac = process.platform === 'darwin'
 export const home = process.env.USERPROFILE || process.env.HOME || homedir()
+
+/** The mod's version, as its manifest gives it: what Claudex tells Codex it is. */
+export const VERSION = (() => {
+  try {
+    return String(JSON.parse(readFileSync(new URL('../.claude-plugin/plugin.json', import.meta.url), 'utf8')).version)
+  } catch {
+    return '0'
+  }
+})()
 
 /** The helper's flags, as the mod passes them: -Name value. */
 export function flags(argv = process.argv.slice(2)) {

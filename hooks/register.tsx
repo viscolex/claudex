@@ -293,7 +293,16 @@ export async function nodeScript($: Engine, script: string, args: string[], time
 }
 
 export async function ensureCodex($: Engine) {
-  if (host.codex) return host.codex
+  if (host.codex) {
+    // The Codex app updates itself, and its CLI moves with it: a path from before the update is found again.
+    let there = true
+    try {
+      there = await $.fs.exists(host.codex)
+    } catch {}
+    if (there) return host.codex
+    host.codex = undefined
+    host.signedIn = false
+  }
   try {
     host.codex = ((await helper($, 'find-codex.mjs')).codex as string | null) ?? undefined
   } catch {}
@@ -591,9 +600,10 @@ export function isRunning(key: string) {
   return running.has(key)
 }
 
-/** A fresh inbox for a round's next run. */
+/** A fresh inbox for a round's next run. (Its folder name keeps only characters every system allows: a picture's
+ * round is "image:…", and Windows refuses a ":" in a folder name.) */
 function newInbox(id: string) {
-  const path = joinPath(shared.dir || joinPath(host.home, '.claude', 'claudex'), 'runs', `${id}-${shortId().slice(0, 6)}`)
+  const path = joinPath(shared.dir || joinPath(host.home, '.claude', 'claudex'), 'runs', `${id.replace(/[<>:"/\\|?*]/g, '-')}-${shortId().slice(0, 6)}`)
   inboxes.set(id, path)
   return path
 }

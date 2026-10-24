@@ -4,6 +4,15 @@
 //
 //   node codex-limits.mjs <path to codex.exe>
 import { spawn } from 'node:child_process'
+import { readFileSync } from 'node:fs'
+
+const VERSION = (() => {
+  try {
+    return String(JSON.parse(readFileSync(new URL('../.claude-plugin/plugin.json', import.meta.url), 'utf8')).version)
+  } catch {
+    return '0'
+  }
+})()
 
 const [codex] = process.argv.slice(2)
 let done = false
@@ -49,4 +58,4 @@ child.stdout.on('data', chunk => {
 child.on('error', err => finish({ ok: false, error: err.message }))
 child.on('exit', code => finish({ ok: false, error: `codex app-server stopped (${code})` }))
 
-send({ id: 1, method: 'initialize', params: { clientInfo: { name: 'claudex', title: 'Claudex', version: '2.6.0' } } })
+send({ id: 1, method: 'initialize', params: { clientInfo: { name: 'claudex', title: 'Claudex', version: VERSION } } })

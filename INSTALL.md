@@ -84,5 +84,6 @@ It checks, against your real Codex, that it starts, that you are signed in, whic
 - **"The Codex app was not found"**: install the Codex app, or the CLI on PATH, and sign in.
 - **"Codex could not be reached (start): …"**: the Codex binary would not start. On a Mac, open the Codex app once so macOS lets its CLI run; then run `node scripts/smoke.mjs` to see what fails.
 - **Two Codex lines above the prompt**: both the old mod and Claudex are loaded; point `CLAUDE_CODE_PLUGIN_DIRS` at `claudex` only.
-- **Anything else after a Codex update**: run `node scripts/smoke.mjs` and send the FAIL lines.
+- **"Codex is ignoring 1 unrecognized configuration setting"**: a key in your own Codex config (`~/.codex/config.toml`, or the project's `.codex/config.toml`) that your Codex no longer reads. The warning names the file and the key; remove or rename that key. It doesn't stop the run.
+- **After a Codex update**: Claudex finds the updated app by itself, with no restart. If something still fails, run `node scripts/smoke.mjs` and send the FAIL lines.
 - **To remove it**: delete the `env` entry and the folder.

@@ -7,7 +7,7 @@
 Reviews and second opinions, tasks in their own worktree, build loops, shared jobs and pictures:<br>
 Codex on your ChatGPT plan, brought into Claude Code, live in the chat.
 
-[![version](https://img.shields.io/badge/version-2.6.0-4c8eda?style=flat-square)](.claude-plugin/plugin.json)
+[![version](https://img.shields.io/badge/version-2.6.1-4c8eda?style=flat-square)](.claude-plugin/plugin.json)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-mod-D97757?style=flat-square&logo=claude&logoColor=white)](https://claude.com/claude-code)
 [![Codex](https://img.shields.io/badge/Codex-ChatGPT_plan-8B93F8?style=flat-square&logo=openai&logoColor=white)](https://openai.com/codex)
 [![license](https://img.shields.io/badge/license-MIT-3fb950?style=flat-square)](LICENSE)
@@ -376,8 +376,18 @@ everything still works; the stage just shows Claude's side without the mascot.
 <details>
 <summary><b>Something's off after a Codex update</b></summary>
 
-Run `node scripts/smoke.mjs` from the mod folder; the `FAIL` lines say what changed. See
+Claudex finds the updated Codex app by itself, with no restart needed. If something still
+fails, run `node scripts/smoke.mjs` from the mod folder; the `FAIL` lines say what changed. See
 [INSTALL.md](INSTALL.md#if-somethings-off) for more fixes.
+</details>
+
+<details>
+<summary><b>"Codex is ignoring 1 unrecognized configuration setting"</b></summary>
+
+That warning is about your own Codex settings, not Claudex: a key in `~/.codex/config.toml`, or
+in the project's `.codex/config.toml`, that your Codex version no longer reads. The warning names
+the file and the key. Remove or rename the key and the warning goes away. Claudex shows it so you
+know, and the run carries on either way.
 </details>
 
 ## Project layout

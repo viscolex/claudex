@@ -39,11 +39,14 @@ const TASK_DONE = {
   notes: null,
 }
 
+/** Codex binaries that are gone (the app updated): every other codex.exe a test names is there. */
+const goneCodex = new Set<string>()
+
 /** Files in memory: the chats' shared files (and anything else the mod writes), never the real disk. */
 function memoryFs(on: any, other?: (e: { path: string; as?: string }) => unknown, written?: (path: string, text: string) => void) {
   const files = new Map<string, { text: string; mtimeMs: number }>()
   let tick = 1
-  on('fs.exists', (_: unknown, e: { path: string }) => ({ value: files.has(e.path) }))
+  on('fs.exists', (_: unknown, e: { path: string }) => ({ value: files.has(e.path) || (/codex\.exe$/i.test(e.path) && !goneCodex.has(e.path)) }))
   on('fs.read', (_: unknown, e: { path: string; as?: string }) => (files.has(e.path) ? { value: files.get(e.path)?.text } : other ? { value: other(e) } : { deny: 'no such file' }))
   on('fs.write', (_: unknown, e: { path: string; text: string }) => {
     files.set(e.path, { text: e.text, mtimeMs: tick++ })
@@ -73,6 +76,8 @@ function world(
     drops?: number
     /** The Codex app updated: its first path is gone, the next lookup finds the new one. */
     stale?: boolean
+    /** The Codex app is at C:\v1 until the test calls move(): then that path is gone and the app is at C:\codex.exe. */
+    moves?: boolean
     /** Codex compares notes and disagrees that Claude's C1 is its F1. */
     disagree?: boolean
     /** What the mod's store holds before the session starts. */
@@ -132,6 +137,9 @@ function world(
   })
   const runs: (readonly string[])[] = []
   let lookups = 0
+  let moved = false
+  goneCodex.clear()
+  if (opts.stale) goneCodex.add('C:\\old\\codex.exe')
   on('process.run', (_: unknown, e: { argv: readonly string[] }) => {
     runs.push(e.argv)
     const [cmd, ...args] = e.argv
@@ -141,6 +149,7 @@ function world(
       const script = String(args[0] ?? '').split(/[\\/]/).pop()
       if (script === 'find-codex.mjs') {
         lookups++
+        if (opts.moves && !moved) return ok('{"codex":"C:\\\\v1\\\\codex.exe"}')
         return ok(opts.stale && lookups === 1 ? '{"codex":"C:\\\\old\\\\codex.exe"}' : '{"codex":"C:\\\\codex.exe"}')
       }
       // Who is signed in, the version and the models: Codex's app server asked through the probe. A path the
@@ -302,7 +311,11 @@ function world(
     }
     return { value: { code: 0, signal: null } }
   })
-  return { clock, runs, spawns, gates, inputs, copies, told, files, inbox }
+  const move = () => {
+    moved = true
+    goneCodex.add('C:\\v1\\codex.exe')
+  }
+  return { clock, runs, spawns, gates, inputs, copies, told, files, inbox, move }
 }
 
 const card = (id: string, tool: string, isRunning = false) => ({
@@ -1278,6 +1291,23 @@ test('after the Codex app updates mid-session, a run finds its new path and star
   expect(probes[0]).toContain('\\old\\')
   expect(probes.at(-1)).toBe('C:\\codex.exe')
   expect(w.spawns.every(a => codexOf(a) === 'C:\\codex.exe')).toBe(true)
+})
+
+test('when the Codex app updates after Claudex has used it, the next run finds the new path', { timeoutMs: 30_000 }, async ($, on) => {
+  const w = world(on, { moves: true })
+  await $.session.start({ cwd: 'C:\\repo', surface: 'desktop', isInteractive: true } as never)
+  w.gates.review?.open()
+  const codexOf = (a?: readonly string[]) => String(a?.[(a?.indexOf('-Codex') ?? -2) + 1])
+  await $.tool.call({ tool: ASK, tool_use_id: 'tu-v1', request: 'Review the cache change.', wait: true } as never)
+  expect(w.spawns.length).toBeGreaterThan(0)
+  expect(w.spawns.every(a => codexOf(a) === 'C:\\v1\\codex.exe')).toBe(true)
+  const before = w.spawns.length
+  // The app updates while Claude Code keeps running: the path Claudex knew is gone.
+  w.move()
+  await $.tool.call({ tool: ASK, tool_use_id: 'tu-v2', request: 'Review it again.', wait: true } as never)
+  const after = w.spawns.slice(before)
+  expect(after.length).toBeGreaterThan(0)
+  expect(after.every(a => codexOf(a) === 'C:\\codex.exe')).toBe(true)
 })
 
 test('a joint review keeps the points still argued in view, both sides', { timeoutMs: 30_000 }, async ($, on) => {

@@ -61,12 +61,31 @@
 // The prompt comes on stdin. Closing this helper closes Codex: the app server
 // exits when its input ends.
 import { spawn } from 'node:child_process'
-import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from 'node:fs'
+import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
-import { flags } from './lib.mjs'
+import { VERSION, flags } from './lib.mjs'
 
 const opts = flags()
 const inbox = opts.inbox
+
+/**
+ * A picture Codex sent without saving it (newer Codex can hand back a file id or the bytes instead of a
+ * path): its bytes, when it sent them, are written beside this run's inbox so the mod can still use it.
+ */
+function savedFromBytes(item) {
+  const bytes = typeof item.result === 'string' && item.result.length > 64 ? item.result.replace(/^data:image\/\w+;base64,/, '') : ''
+  if (!bytes || !inbox) return null
+  try {
+    const dir = join(dirname(inbox), 'images')
+    mkdirSync(dir, { recursive: true })
+    const path = join(dir, `${String(item.id ?? Date.now()).replace(/[^\w.-]/g, '-')}.png`)
+    writeFileSync(path, Buffer.from(bytes, 'base64'))
+    return path
+  } catch {
+    return null
+  }
+}
+
 const images = (() => {
   try {
     const list = JSON.parse(opts.images || '[]')
@@ -581,7 +600,7 @@ function itemCompleted(item) {
     out({
       type: 'image.generated',
       item_id: String(item.id ?? ''),
-      saved_path: item.savedPath ? String(item.savedPath) : null,
+      saved_path: item.savedPath ? String(item.savedPath) : savedFromBytes(item),
       revised_prompt: item.revisedPrompt ? String(item.revisedPrompt).slice(0, 2000) : null,
       transparent: item.transparentBackground === true,
       failure: item.failure ? String(item.failure.message ?? item.failure.kind ?? JSON.stringify(item.failure)).slice(0, 400) : null,
@@ -907,7 +926,7 @@ async function main() {
   })
 
   // The ask_claude tool needs Codex's experimental API, and so do some permission requests and a turn's additional context.
-  const hello = await request('initialize', { clientInfo: { name: 'claudex', title: 'Claudex', version: '2.6.0' }, ...(opts.ask || opts.permitwait || Object.keys(brief.context ?? {}).length ? { capabilities: { experimentalApi: true } } : {}) })
+  const hello = await request('initialize', { clientInfo: { name: 'claudex', title: 'Claudex', version: VERSION }, ...(opts.ask || opts.permitwait || Object.keys(brief.context ?? {}).length ? { capabilities: { experimentalApi: true } } : {}) })
   send({ method: 'initialized' })
   if (hello?.userAgent) out({ type: 'codex.version', user_agent: String(hello.userAgent), version: versionOf(hello.userAgent) })
   if (stopping) return
@@ -921,8 +940,16 @@ async function main() {
   const developerInstructions = brief.instructions
   const setup = { cwd: opts.cwd || undefined, model: opts.model || undefined, sandbox, approvalPolicy, ...(developerInstructions ? { developerInstructions } : {}) }
   let opened
-  if (opts.thread) opened = await request('thread/resume', { threadId: opts.thread, ...setup })
-  else if (opts.ask) {
+  if (opts.thread) {
+    // Only the thread, not its whole history: Claudex never reads past turns back, and Codex has deprecated
+    // loading them all on resume. A Codex too old to know the option opens it the old way.
+    try {
+      opened = await request('thread/resume', { threadId: opts.thread, ...setup, excludeTurns: true })
+    } catch (err) {
+      if (!/excludeTurns|unknown field/i.test(err instanceof Error ? err.message : String(err))) throw err
+      opened = await request('thread/resume', { threadId: opts.thread, ...setup })
+    }
+  } else if (opts.ask) {
     const tools = [
       {
         type: 'function',
