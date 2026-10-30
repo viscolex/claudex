@@ -7,7 +7,8 @@
 Reviews and second opinions, tasks in their own worktree, build loops, shared jobs and pictures:<br>
 Codex on your ChatGPT plan, brought into Claude Code, live in the chat.
 
-[![version](https://img.shields.io/badge/version-2.6.1-4c8eda?style=flat-square)](.claude-plugin/plugin.json)
+[![version](https://img.shields.io/badge/version-2.7.0-4c8eda?style=flat-square)](.claude-plugin/plugin.json)
+[![Codex](https://img.shields.io/badge/checked_with_Codex-0.164%E2%80%930.166-8B93F8?style=flat-square)](#requirements)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-mod-D97757?style=flat-square&logo=claude&logoColor=white)](https://claude.com/claude-code)
 [![Codex](https://img.shields.io/badge/Codex-ChatGPT_plan-8B93F8?style=flat-square&logo=openai&logoColor=white)](https://openai.com/codex)
 [![license](https://img.shields.io/badge/license-MIT-3fb950?style=flat-square)](LICENSE)
@@ -57,6 +58,8 @@ they compare notes, argue out where they disagree, and agree on one solution.
 ### 🛠️ Tasks in their own worktree
 Codex builds in **its own copy of the repo**, so nothing touches your files until Claude has
 reviewed the diff and applies it, in whole or file by file. Every apply can be undone in one click.
+A fix task starts from **its review's own conversation**, so Codex already knows what it found,
+and **Try another way** has Codex take a second, different run at a task beside the first.
 
 </td>
 <td valign="top">
@@ -90,7 +93,8 @@ that, it paints on flat magenta and Claudex keys it out for you. It also paints 
 
 ### ✅ Fixes checked, not assumed
 Applying a fix leaves its findings open, marked **fix applied**, until Claude or a Codex
-recheck confirms them. One tap closes them if you checked yourself.
+recheck confirms them. One tap closes them if you checked yourself. Rechecks run a step lighter
+than their review, so they cost less.
 
 </td>
 <td valign="top">
@@ -181,7 +185,8 @@ From top to bottom:
   **Copy as Markdown** or **Share with Claude**.
 - **Every round, in order.** What Claude sent and what Codex answered, the files it read, the
   searches it ran, how long it took, and its tokens (and how many were cached). **What Codex did**
-  lists each step. Where Claude disputed a finding, Codex's answer says whether it *holds*,
+  lists each step, with how long each command took by Codex's own clock. Where Codex gives an
+  estimate, the result also says what the conversation used (`~3.4 credits`, or dollars on a dollar plan). Where Claude disputed a finding, Codex's answer says whether it *holds*,
   *concedes* or *refines* it.
 
 While a round runs, the same page shows it live: send Codex a note now, queue one for its next
@@ -234,7 +239,19 @@ and the page size is configurable.
 
 Codex works in its own git worktree, so your files stay untouched. When it finishes, Claude
 reviews the patch like a colleague's. It then applies the patch, applies only some files,
-sends it back with notes, or throws it away.
+sends it back with notes, or throws it away. Not happy with the approach? **Try another way** on
+the task's page has Codex start again in a fresh copy, knowing its first attempt, and you compare the two.
+</details>
+
+<details>
+<summary><b>Fix what a review found</b></summary>
+
+```text
+Have Codex fix F1 and F3 from that review.
+```
+
+The task starts from the review's own Codex conversation, so Codex already knows the code it
+read and why it flagged each finding. The findings stay open until a recheck or Claude confirms them.
 </details>
 
 <details>
@@ -292,7 +309,7 @@ Stop Codex.
 | Needs | Details |
 |---|---|
 | **Claude Code** | The desktop app or the terminal |
-| **Codex** | Signed in with your ChatGPT account. The Codex desktop app works best, because Claudex uses its CLI. The CLI on its own also works: `npm i -g @openai/codex`, then `codex login` |
+| **Codex** | Signed in with your ChatGPT account. The Codex desktop app works best, because Claudex uses its CLI. The CLI on its own also works: `npm i -g @openai/codex`, then `codex login`. Claudex 2.7 is checked with Codex 0.164 to 0.166 |
 | **Node.js** | 20 or newer |
 | **git** | Any recent version |
 
@@ -328,8 +345,8 @@ your first message, and `/claudex` opens the pane.
 node ~/.claude/mods/claudex/scripts/smoke.mjs
 ```
 
-Each check prints `PASS` or `FAIL`. No model runs, so it costs nothing. Add `--turn` to also
-run one tiny real turn.
+Each check prints `PASS` or `FAIL`, and a `NOTE` when your Codex is newer than the one Claudex
+was checked with. No model runs, so it costs nothing. Add `--turn` to also run one tiny real turn.
 
 > [!TIP]
 > To update later, run `git pull` in `~/.claude/mods/claudex` and restart Claude Code.
@@ -346,8 +363,12 @@ Open **Usage & settings** in the Claudex pane, or the mod's settings in Claude C
 | Reasoning effort | `low` · `medium` · `high` · `xhigh` · `max` · `ultra` | `high` |
 | Motion | Calm · Full · Still | Calm |
 
+A recheck runs one step lighter than its conversation (`xhigh` becomes `high`, never below
+`medium`). When you reply or recheck from the pane, the confirm step lets you pick another effort.
+
 Codex runs use your own Codex quota. Claudex shows your usage, and warns you before starting
-work once you're above 90%.
+work once you're above 90%. If your account has a **free usage reset**, the board shows it with
+its expiry; **Use it…** asks you to confirm before anything is reset. Claudex never uses it by itself.
 
 ## FAQ
 
@@ -362,6 +383,8 @@ nothing reaches your files until Claude reviews the diff and applies it. Every a
 <summary><b>What does it cost?</b></summary>
 
 Claudex is free. Codex runs on your own ChatGPT plan's Codex quota, and the smoke test uses none.
+Where Codex gives an estimate, each result says what its conversation used. Not every plan or
+Codex version gives one yet; then nothing is shown.
 </details>
 
 <details>
@@ -379,6 +402,25 @@ everything still works; the stage just shows Claude's side without the mascot.
 Claudex finds the updated Codex app by itself, with no restart needed. If something still
 fails, run `node scripts/smoke.mjs` from the mod folder; the `FAIL` lines say what changed. See
 [INSTALL.md](INSTALL.md#if-somethings-off) for more fixes.
+</details>
+
+<details>
+<summary><b>What do Codex's error messages mean?</b></summary>
+
+Claudex turns Codex's failures into what to do next: a model your account doesn't have (pick
+another on the board), a usage limit (and when it resets, or that you have a free reset), busy
+servers (try again in a few minutes), an expired sign-in (sign in again in the Codex app) and a
+lost connection. Codex's own words follow in brackets.
+
+If Codex can't reopen a conversation (you switched model provider since, or its session is gone),
+the next round starts a fresh Codex conversation with a summary of the old one instead of failing.
+</details>
+
+<details>
+<summary><b>Does it work with a Google Cloud Codex account?</b></summary>
+
+Yes, for conversations and tasks. Codex has no image generation or web search there, so Claudex
+says so instead of starting a picture, and the board shows no usage meters.
 </details>
 
 <details>

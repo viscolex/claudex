@@ -290,6 +290,14 @@ export type CodexConsult = {
   /** The last check-in on a quiet run: when, and whether Codex was still at work. */
   checkIn?: { at: number; alive: boolean; found: boolean }
   error?: string
+  /** Codex's own kind of failure, when it gave one (modelNotFound, usageLimitExceeded, serverOverloaded, unauthorized, …). */
+  errorKind?: string
+  /** A new thread's starting point: the Codex thread whose history it starts from (a review's, or a task's first attempt). */
+  forkFrom?: string
+  /** Why this round started a fresh Codex thread instead of carrying on its own (its thread could not be opened again). */
+  restarted?: string
+  /** What the Codex thread had used when this round ended, as Codex estimates it: credits, and dollars on a dollar plan. */
+  cost?: { credits: number | null; usd: number | null; at: number }
 }
 
 // ---------------------------------------------------------------------------
@@ -345,6 +353,8 @@ export type CodexImage = {
   revisedPrompt?: string
   /** Codex reported the picture's background as transparent. */
   transparent?: boolean
+  /** Codex's id for the generation, kept so a picture made from this one can say where it came from. */
+  generationId?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -400,6 +410,8 @@ export type CodexView = {
   tell?: string
   /** Where the person's note goes: into the running turn (now), or into Codex's next round. */
   tellWhen?: 'now' | 'next'
+  /** The board asks the person to confirm using a free usage reset. */
+  resetAsk?: boolean
 }
 
 /** The person's picks in the pane: they override the settings' defaults. */
@@ -421,7 +433,8 @@ export type CodexPrefs = {
 /** What Codex says about itself: its version, the account signed in, and the models it offers. */
 export type CodexInfo = {
   version: string | null
-  account: { type: string; plan?: string } | null
+  /** `workspace`: the ChatGPT workspace in use. A "gcp" account (Google Cloud) has no usage limits, pictures or web search. */
+  account: { type: string; plan?: string; workspace?: string } | null
   models: { id: string; name: string; description: string; isDefault: boolean; efforts: string[]; defaultEffort: string | null; tiers: { id: string; name: string }[]; images: boolean }[]
   at: number
 }
@@ -445,6 +458,10 @@ export type CodexUsage = {
   windows: { minutes: number; percent: number; resetsAt?: number }[]
   credits?: string
   reached?: string
+  /** Free resets of the plan's usage limits the account holds: how many, and the first one's name and expiry (unix seconds). */
+  resets?: { available: number; title?: string; expiresAt?: number }
+  /** The workspace's spend control stopped further use. */
+  spendReached?: boolean
 }
 
 declare module 'claude-code' {

@@ -9,7 +9,7 @@ Claude and Codex, working together from Claude Code. Claudex brings Codex
 - a two-way line while Codex works: you or Claude send it notes; Codex tells Claude what it finds, and asks when it needs an answer, either waiting for it or carrying on while Claude thinks
 - notes for Codex's next round, queued while it works, that start the next round by themselves when it finishes
 - Codex can use its own browser (the Codex app's Browser use): when it wants a site, you get Allow once / Always allow / Deny
-- open findings fixed in one go, and pictures
+- open findings fixed in one go (the task starts from its review's own Codex conversation), another try at a task beside the first, and pictures
 
 It has live cards in the chat, a band above the prompt where Claude and Codex
 work on a little stage (what Codex does lands on the floor between them, step
@@ -18,7 +18,7 @@ by step), and the Claudex pane (`/claudex`). It works on macOS and Windows.
 ## What you need
 
 - **Claude Code**, the desktop app or the terminal.
-- **Codex, signed in with your ChatGPT account.** The Codex desktop app is best (Claudex uses its CLI). The Codex CLI alone also works (`npm i -g @openai/codex`, then `codex login`).
+- **Codex, signed in with your ChatGPT account.** The Codex desktop app is best (Claudex uses its CLI). The Codex CLI alone also works (`npm i -g @openai/codex`, then `codex login`). Claudex 2.7 is checked with Codex 0.164 to 0.166.
 - **Node.js 20 or newer** (`brew install node` on a Mac).
 - **git.**
 
@@ -65,7 +65,7 @@ After installing, and whenever the Codex app updates, run the smoke test from th
 node scripts/smoke.mjs
 ```
 
-It checks, against your real Codex, that it starts, that you are signed in, which models it offers, and that it still accepts everything Claudex sends. No model runs, so it costs nothing. `node scripts/smoke.mjs --turn` also runs one tiny turn (a few thousand tokens of your plan). Each line says PASS or FAIL.
+It checks, against your real Codex, that it starts, that you are signed in, your usage (and any free resets), which models it offers (Claudex's default among them), that it takes the requests that carry a conversation on, start a task from a review and read a thread's cost, and that it still accepts everything Claudex sends. No model runs, so it costs nothing. `node scripts/smoke.mjs --turn` also runs one tiny turn (a few thousand tokens of your plan). Each line says PASS or FAIL; a NOTE says when your Codex is newer than the one Claudex was checked with.
 
 ## Optional, per project
 
@@ -86,4 +86,8 @@ It checks, against your real Codex, that it starts, that you are signed in, whic
 - **Two Codex lines above the prompt**: both the old mod and Claudex are loaded; point `CLAUDE_CODE_PLUGIN_DIRS` at `claudex` only.
 - **"Codex is ignoring 1 unrecognized configuration setting"**: a key in your own Codex config (`~/.codex/config.toml`, or the project's `.codex/config.toml`) that your Codex no longer reads. The warning names the file and the key; remove or rename that key. It doesn't stop the run.
 - **After a Codex update**: Claudex finds the updated app by itself, with no restart. If something still fails, run `node scripts/smoke.mjs` and send the FAIL lines.
+- **"… isn't available to your Codex account"**: the model picked on the board isn't on your plan; pick another.
+- **"Your Codex usage limit is reached"**: the message says when the window resets. If you have a free usage reset, the board's **Reset** row offers it (it asks you to confirm first).
+- **"Codex's sign-in has expired"**: open the Codex app and sign in again.
+- **A round says it "started a fresh one with a summary"**: Codex couldn't reopen that conversation (the model provider changed, or its session is gone), so Claudex carried on in a new one instead of failing.
 - **To remove it**: delete the `env` entry and the folder.

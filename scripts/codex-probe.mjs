@@ -2,7 +2,7 @@
 // models it offers: initialize, account/read and model/list. No model runs, so
 // no quota is spent. Prints one JSON line:
 //
-//   { ok: true, version, userAgent, codexHome, signedIn, account: { type, plan }, models: [...] }
+//   { ok: true, version, userAgent, codexHome, signedIn, account: { type, plan, workspace }, models: [...] }
 //   { ok: false, stage, error }   stage: "start" (Codex would not start), "handshake", "account"
 //
 //   node codex-probe.mjs <path to codex.exe> [--no-models]
@@ -82,7 +82,10 @@ child.stdout.on('data', chunk => {
       const account = message.result?.account ?? null
       result.signedIn = Boolean(account)
       result.requiresAuth = Boolean(message.result?.requiresOpenaiAuth)
-      result.account = account ? { type: String(account.type ?? ''), ...(account.planType ? { plan: String(account.planType) } : {}) } : null
+      // The ChatGPT workspace it uses, when Codex names it (0.166 and later); a Google Cloud ("gcp") account has no usage limits, pictures or web search.
+      result.account = account
+        ? { type: String(account.type ?? ''), ...(account.planType ? { plan: String(account.planType) } : {}), ...(account.workspaceName ? { workspace: String(account.workspaceName) } : {}) }
+        : null
       if (withModels) askModels()
       else finish(result)
     } else if (message.id === 3) {

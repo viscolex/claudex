@@ -2,18 +2,21 @@
 // this Codex still take everything the mod sends? Prints PASS/FAIL lines and
 // exits non-zero when anything fails. Runs on Windows and macOS alike.
 //
-//   node scripts/smoke.mjs            no model runs, no quota: version, account, models, and a thread
-//                                     opened with the mod's exact setup (ask/tell tools through the
-//                                     experimental API, granular approvals, developer instructions)
+//   node scripts/smoke.mjs            no model runs, no quota: version (and whether it is newer than the
+//                                     Codex this Claudex was checked against), account, usage, models
+//                                     (the default among them), the requests that resume, fork and read
+//                                     back threads, and a thread opened with the mod's exact setup
+//                                     (ask/tell tools through the experimental API, granular approvals,
+//                                     developer instructions)
 //   node scripts/smoke.mjs --turn     also one tiny turn through the bridge, in its JSON schema
 //                                     (a few thousand tokens of the plan's quota)
 //   node scripts/smoke.mjs --codex <path>   a Codex other than the one the mod would find
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { VERSION, findCodex } from './lib.mjs'
+import { TESTED, VERSION, findCodex } from './lib.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const args = process.argv.slice(2)
@@ -21,6 +24,21 @@ const codex = args.includes('--codex') ? args[args.indexOf('--codex') + 1] : fin
 const results = []
 const pass = (name, detail = '') => results.push({ ok: true, name, detail })
 const fail = (name, detail = '') => results.push({ ok: false, name, detail })
+/** Worth knowing, not a failure. */
+const notes = []
+
+/** "0.166" out of "0.166.0-alpha.5.1", as a number to compare. */
+const minor = version => Number(/^\d+\.(\d+)/.exec(String(version ?? ''))?.[1] ?? NaN)
+
+/**
+ * A request the mod sends, asked about a thread that does not exist: Codex knows the request and takes its
+ * parameters when it answers that the thread is missing, rather than that the method or a field is unknown.
+ */
+function takes(answer) {
+  const e = answer.error
+  if (!e) return true
+  return e.code !== -32601 && !/unknown (field|variant|method)|method not found/i.test(String(e.message ?? ''))
+}
 
 /** Codex's app server, spoken to directly: requests with deadlines. */
 function appServer(cwd) {
@@ -91,15 +109,62 @@ async function main() {
   if (hello.error) return fail('initialize', hello.error.message)
   server.notify('initialized')
   pass('initialize', hello.result?.userAgent ?? '')
+  const version = /\/(\d+\.\d+\.\d+[^\s(]*)/.exec(String(hello.result?.userAgent ?? ''))?.[1]
+  if (version) {
+    const at = minor(version)
+    if (at > minor(TESTED.to)) notes.push(`Codex ${version} is newer than the ${TESTED.from}–${TESTED.to} Claudex ${VERSION} was checked against: run with --turn too, and look at what changed.`)
+    else if (at < minor(TESTED.from)) notes.push(`Codex ${version} is older than the ${TESTED.from}–${TESTED.to} Claudex ${VERSION} was checked against: update the Codex app.`)
+  }
 
   const account = await server.request('account/read', {})
   if (account.error) fail('account/read', account.error.message)
   else if (!account.result?.account) fail('signed in', 'no account: sign in to Codex with ChatGPT')
-  else pass('signed in', `${account.result.account.type}${account.result.account.planType ? ` · ${account.result.account.planType}` : ''}`)
+  else {
+    const a = account.result.account
+    pass('signed in', `${a.type}${a.planType ? ` · ${a.planType}` : ''}${a.workspaceName ? ` · ${a.workspaceName}` : ''}`)
+    if (a.type === 'gcp') notes.push('A Google Cloud account: Codex has no pictures or web search on it, and no usage limits to show.')
+  }
+
+  const limits = await server.request('account/rateLimits/read', {})
+  if (limits.error) fail('account/rateLimits/read', limits.error.message)
+  else {
+    const r = limits.result ?? {}
+    const windows = [r.rateLimits?.primary, r.rateLimits?.secondary].filter(Boolean).map(w => `${w.windowDurationMins / 60 >= 24 ? `${w.windowDurationMins / 1440}d` : `${w.windowDurationMins / 60}h`} ${w.usedPercent}%`)
+    const resets = Number(r.rateLimitResetCredits?.availableCount ?? 0)
+    pass('account/rateLimits/read', [windows.join(', ') || 'no windows', resets ? `${resets} free reset${resets > 1 ? 's' : ''}` : '', r.rateLimits?.spendControlReached ? 'spend control reached' : ''].filter(Boolean).join(' · '))
+  }
 
   const models = await server.request('model/list', { limit: 100 })
   if (models.error) fail('model/list', models.error.message)
-  else pass('model/list', (models.result?.data ?? []).filter(m => !m.hidden).map(m => m.id).join(', '))
+  else {
+    const ids = (models.result?.data ?? []).filter(m => !m.hidden).map(m => m.id)
+    pass('model/list', ids.join(', '))
+    // The mod's default model (its manifest's): a run with no pick of the person's uses it.
+    const fallback = (() => {
+      try {
+        return String(JSON.parse(readFileSync(join(here, '..', '.claude-plugin', 'plugin.json'), 'utf8')).userConfig?.model?.default ?? '')
+      } catch {
+        return ''
+      }
+    })()
+    if (fallback) (ids.includes(fallback) ? pass : fail)('the default model is offered', ids.includes(fallback) ? fallback : `${fallback} is not in Codex's list: change the default in .claude-plugin/plugin.json`)
+  }
+
+  // What carries a conversation on, starts a task from a review, reads back a dropped answer and a thread's cost.
+  const nothing = '00000000-0000-7000-8000-000000000000'
+  const shapes = [
+    ['thread/resume (without its turns)', 'thread/resume', { threadId: nothing, excludeTurns: true }],
+    ['thread/fork (attached to its source)', 'thread/fork', { threadId: nothing, attachToSource: true, excludeTurns: true }],
+    // Optional: a Codex without it (0.166 alphas) cannot read a dropped answer back, and the run goes on.
+    ['thread/items/list', 'thread/items/list', { threadId: nothing, limit: 1 }, 'not in this Codex yet: a dropped answer cannot be read back'],
+    ['account/usage/read for a thread', 'account/usage/read', { threadId: nothing }],
+  ]
+  for (const [name, method, params, optional] of shapes) {
+    const answer = await server.request(method, params)
+    if (takes(answer)) pass(name, answer.error ? 'known' : 'answered')
+    else if (optional) pass(name, optional)
+    else fail(name, answer.error.message)
+  }
 
   // The mod's own thread setup, as appserver.mjs sends it, on a thread that is never saved.
   const tool = (name, field) => ({ type: 'function', name, description: `smoke test ${name}`, inputSchema: { type: 'object', properties: { [field]: { type: 'string' } }, required: [field], additionalProperties: false } })
@@ -149,6 +214,7 @@ main()
   .catch(err => fail('smoke test', err instanceof Error ? err.message : String(err)))
   .finally(() => {
     for (const r of results) console.log(`${r.ok ? 'PASS' : 'FAIL'}  ${r.name}${r.detail ? `  ·  ${r.detail}` : ''}`)
+    for (const n of notes) console.log(`NOTE  ${n}`)
     const failed = results.filter(r => !r.ok).length
     console.log(failed ? `\n${failed} failed` : '\nAll good')
     process.exit(failed ? 1 : 0)

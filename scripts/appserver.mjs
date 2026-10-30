@@ -26,8 +26,18 @@
 //   image.generated           a picture Codex made: where it saved it, the prompt it used, whether its
 //                             background is transparent, or why it failed
 //   model.rerouted            Codex moved the turn to another model
-//   notice                    a warning, config warning, deprecation notice or guardian warning
+//   notice                    a warning, config warning, deprecation notice or guardian warning about this run
+//                             (Codex's own background warnings, which name no thread, go to stderr)
 //   request.resolved          a request of Codex's (a question, a permission) was settled elsewhere
+//   thread.forked             the thread started from another one's history (-Fork); fork.unavailable: it could
+//                             not, and a fresh thread was started instead
+//   backfilled                the turn ended without its answer (or picture) having come through, and it was
+//                             read back from the turn's items
+//
+// turn.failed and error carry Codex's kind of failure when it gave one (kind: modelNotFound,
+// usageLimitExceeded, serverOverloaded, unauthorized, …, and status, the HTTP status), and kind "resume"
+// (with resume: the reason) when the thread could not be opened again. Items carry Codex's own
+// started_at_ms / completed_at_ms / duration_ms when it recorded them.
 //
 // The mod cannot write to a running process, so notes, answers and stops come
 // in as files: each *.json put in the run's inbox folder ({ "type": "steer",
@@ -50,10 +60,12 @@
 //     [-Ask <description>] [-AskWait <ms>] [-Tell <description>]   (-Tell gives it tell_claude too, with -Ask)
 //     [-Later <description>]   (with -Ask: ask_claude_later too, a question it does not wait on)
 //     [-PermitWait <ms>] [-Instructions <file>] [-Context <file>] [-Title <name>] [-Tier <service tier>]
+//     [-Fork <thread id>]   (a new thread that starts from that thread's history)
 //
 // -Instructions is a text file of standing rules, sent as the thread's developer instructions on
 // start and on resume. -Context is a JSON file { key: { value, kind } } (kind "application" for
-// background, "untrusted" for logs and quoted material) sent with the turn as additional context.
+// background, "untrusted" for logs and quoted material; an untrusted entry is labelled with its key,
+// or its own "name") sent with the turn as additional context.
 // -Title names a new thread, so it reads well in the Codex app. Without -Schema the turn has no
 // output schema (pictures). With -Envelope, stdin is one JSON object instead of the bare prompt:
 // { prompt, instructions?, context? }, the same three things without side files.
@@ -160,6 +172,43 @@ function rpcError(method, error) {
   if (error.code !== undefined) err.code = error.code
   if (error.data !== undefined) err.data = error.data
   return err
+}
+
+/** A request Codex refused for now (a thread still closing, a workspace switching): asked again a few times. */
+const BUSY = /is closing; retry|workspace change in progress/i
+
+async function requestPatiently(method, params) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await request(method, params)
+    } catch (err) {
+      if (attempt >= 3 || !BUSY.test(err instanceof Error ? err.message : String(err))) throw err
+      await new Promise(done => setTimeout(done, 1500 * (attempt + 1)))
+    }
+  }
+}
+
+/**
+ * What kind of failure Codex reported, as one word the mod explains: its codexErrorInfo
+ * ("modelNotFound", "usageLimitExceeded", "httpConnectionFailed", …), and the HTTP status when it gave one.
+ */
+function kindOf(info) {
+  if (typeof info === 'string') return { kind: info }
+  if (!info || typeof info !== 'object') return {}
+  const [kind] = Object.keys(info)
+  const status = info[kind]?.httpStatusCode
+  return kind ? { kind, ...(typeof status === 'number' ? { status } : {}) } : {}
+}
+
+/**
+ * A thread that cannot be opened again: another model provider than the one it started on (Codex 0.166
+ * refuses those), or no longer on disk. The mod then starts a fresh thread with a summary of the conversation.
+ */
+function resumeKind(err) {
+  const type = String(err?.data?.type ?? '')
+  if (/^modelProvider/.test(type)) return type
+  if (/no rollout|thread not found|not found.*thread|unknown thread/i.test(err instanceof Error ? err.message : String(err))) return 'threadNotFound'
+  return ''
 }
 
 /**
@@ -523,10 +572,10 @@ function onNotification(method, p) {
       handOverEarly()
       break
     case 'item/started':
-      itemStarted(p.item ?? {})
+      itemStarted(p.item ?? {}, p.startedAtMs)
       break
     case 'item/completed':
-      itemCompleted(p.item ?? {})
+      itemCompleted(p.item ?? {}, p.completedAtMs)
       break
     case 'item/reasoning/summaryTextDelta':
       reasoningDelta(p)
@@ -545,7 +594,10 @@ function onNotification(method, p) {
       break
     case 'warning':
     case 'guardianWarning':
-      if (p.message) out({ type: 'notice', kind: method, text: String(p.message).slice(0, 600) })
+      // Codex's own background trouble (a marketplace that would not update) names no thread: logged, not shown on the run.
+      if ('threadId' in p && p.threadId === null) {
+        if (p.message) process.stderr.write(`codex: ${String(p.message).slice(0, 600)}\n`)
+      } else if (p.message) out({ type: 'notice', kind: method, text: String(p.message).slice(0, 600) })
       break
     case 'configWarning':
     case 'deprecationNotice':
@@ -573,30 +625,58 @@ function onNotification(method, p) {
     case 'account/rateLimits/updated':
       if (p.rateLimits) out({ type: 'limits.updated', rate_limits: p.rateLimits })
       break
-    case 'error':
-      out(p.willRetry ? { type: 'retrying', message: String(p.error?.message ?? '') } : { type: 'error', message: String(p.error?.message ?? 'Codex reported an error') })
+    case 'error': {
+      const why = kindOf(p.error?.codexErrorInfo)
+      if (!p.willRetry && why.kind) lastKind = why
+      out(p.willRetry ? { type: 'retrying', message: String(p.error?.message ?? ''), ...why } : { type: 'error', message: String(p.error?.message ?? 'Codex reported an error'), ...why })
       break
+    }
     case 'turn/completed':
-      turnCompleted(p.turn ?? {})
+      void turnCompleted(p.turn ?? {})
       break
   }
 }
 
-function itemStarted(item) {
-  if (item.type === 'agentMessage') messages.set(String(item.id), { phase: item.phase ?? null, text: '' })
-  else if (item.type === 'imageGeneration') out({ type: 'item.started', item: { id: item.id, type: 'image_generation' } })
-  if (item.type === 'commandExecution') out({ type: 'item.started', item: { id: item.id, type: 'command_execution', command: String(item.command ?? '') } })
-  else if (item.type === 'webSearch') out({ type: 'item.started', item: { id: item.id, type: 'web_search', query: String(item.query ?? '') } })
-  else if (item.type === 'mcpToolCall') out({ type: 'item.started', item: { id: item.id, type: 'mcp_tool_call', server: item.server, tool: item.tool } })
+/** When each item started, by id, as Codex recorded it (0.166 and later): a finished item's duration is exact. */
+const startedAt = new Map()
+
+/** Codex's own times for an item, for the events that print it. */
+function timesOf(item, started, completed) {
+  const from = Number(started ?? item.startedAtMs ?? startedAt.get(String(item.id))) || undefined
+  const to = Number(completed ?? item.completedAtMs) || undefined
+  return { ...(from ? { started_at_ms: from } : {}), ...(to ? { completed_at_ms: to } : {}), ...(from && to && to >= from ? { duration_ms: to - from } : {}) }
 }
 
-function itemCompleted(item) {
+function itemStarted(item, at) {
+  if (at || item.startedAtMs) startedAt.set(String(item.id), Number(at ?? item.startedAtMs))
+  const times = timesOf(item, at)
+  if (item.type === 'agentMessage') messages.set(String(item.id), { phase: item.phase ?? null, text: '' })
+  else if (item.type === 'imageGeneration') out({ type: 'item.started', item: { id: item.id, type: 'image_generation' }, ...times })
+  if (item.type === 'commandExecution') out({ type: 'item.started', item: { id: item.id, type: 'command_execution', command: String(item.command ?? '') }, ...times })
+  else if (item.type === 'webSearch') out({ type: 'item.started', item: { id: item.id, type: 'web_search', query: String(item.query ?? '') }, ...times })
+  else if (item.type === 'mcpToolCall') out({ type: 'item.started', item: { id: item.id, type: 'mcp_tool_call', server: item.server, tool: item.tool }, ...times })
+}
+
+/** Answers and pictures already printed, by item: a backfill at the end of the turn prints only what was missed. */
+const printed = new Set()
+let sawAnswer = false
+let sawImage = false
+/** The kind of the last failure Codex reported without retrying it (see kindOf), for a turn that then fails. */
+let lastKind = {}
+
+function itemCompleted(item, at) {
+  const times = timesOf(item, undefined, at)
+  startedAt.delete(String(item.id))
   if (item.type === 'commandExecution') {
     flushStream(`o:${item.id}`)
     const tail = tailOf(item.aggregatedOutput ?? outputs.get(String(item.id)) ?? '')
     outputs.delete(String(item.id))
-    out({ type: 'item.completed', item: { id: item.id, type: 'command_execution', command: String(item.command ?? ''), exit_code: item.exitCode ?? null, status: item.status, ...(tail ? { output: tail } : {}) } })
+    // Codex's own measure of the command, when it gave one.
+    const ms = Number(item.durationMs) > 0 ? { duration_ms: Number(item.durationMs) } : {}
+    out({ type: 'item.completed', item: { id: item.id, type: 'command_execution', command: String(item.command ?? ''), exit_code: item.exitCode ?? null, status: item.status, ...(tail ? { output: tail } : {}) }, ...times, ...ms })
   } else if (item.type === 'imageGeneration') {
+    printed.add(String(item.id))
+    sawImage = true
     out({
       type: 'image.generated',
       item_id: String(item.id ?? ''),
@@ -605,19 +685,46 @@ function itemCompleted(item) {
       transparent: item.transparentBackground === true,
       failure: item.failure ? String(item.failure.message ?? item.failure.kind ?? JSON.stringify(item.failure)).slice(0, 400) : null,
       status: String(item.status ?? ''),
+      ...(item.generationId ? { generation_id: String(item.generationId) } : {}),
     })
   } else if (item.type === 'fileChange') {
     const changes = (Array.isArray(item.changes) ? item.changes : []).map(c => ({ path: String(c.path ?? ''), kind: typeof c.kind === 'string' ? c.kind : String(c.kind?.type ?? 'update') }))
-    out({ type: 'item.completed', item: { id: item.id, type: 'file_change', changes } })
+    out({ type: 'item.completed', item: { id: item.id, type: 'file_change', changes }, ...times })
   } else if (item.type === 'reasoning') {
     for (const key of [...reasoning.keys()]) if (key.startsWith(`${item.id}:`)) reasoning.delete(key)
     const text = (Array.isArray(item.summary) ? item.summary : []).join('\n\n')
-    out({ type: 'item.completed', item: { id: item.id, type: 'reasoning', text } })
+    out({ type: 'item.completed', item: { id: item.id, type: 'reasoning', text }, ...times })
   } else if (item.type === 'agentMessage') {
+    printed.add(String(item.id))
+    if (item.phase !== 'commentary') sawAnswer = true
     flushStream(`m:${item.id}`)
     messages.delete(String(item.id))
-    out({ type: 'item.completed', item: { id: item.id, type: 'agent_message', text: String(item.text ?? ''), phase: item.phase ?? null } })
+    out({ type: 'item.completed', item: { id: item.id, type: 'agent_message', text: String(item.text ?? ''), phase: item.phase ?? null }, ...times })
+  } else if (item.type === 'webSearch' || item.type === 'mcpToolCall') {
+    out({ type: 'item.completed', item: { id: item.id, type: item.type === 'webSearch' ? 'web_search' : 'mcp_tool_call' }, ...times })
   }
+}
+
+/**
+ * Codex can drop item notifications when its reader falls behind (its own `codex exec` re-reads the
+ * turn's items for this since 0.166): a turn that ends without a final answer, or a picture run without
+ * its picture, reads the turn's items back and prints what was missed. Never fatal.
+ */
+async function backfill() {
+  if (!threadId || !turnId) return
+  // Nothing missed that matters: the answer came (and, for a picture run, the picture).
+  if (sawAnswer && (opts.schema || sawImage)) return
+  const answered = sawAnswer
+  try {
+    const page = await request('thread/items/list', { threadId, turnId, limit: 100 }, 15_000)
+    const missed = (Array.isArray(page?.data) ? page.data : []).filter(e => {
+      const type = e?.item?.type
+      return (type === 'agentMessage' || type === 'imageGeneration') && !printed.has(String(e.item.id))
+    })
+    if (!missed.length) return
+    for (const entry of missed) itemCompleted({ ...entry.item, startedAtMs: entry.item.startedAtMs ?? entry.startedAtMs }, entry.completedAtMs ?? undefined)
+    out({ type: 'backfilled', items: missed.length, had_answer: answered })
+  } catch {}
 }
 
 /**
@@ -703,7 +810,7 @@ function turnUsage() {
   return { input_tokens: d('inputTokens'), cached_input_tokens: d('cachedInputTokens'), output_tokens: d('outputTokens'), reasoning_output_tokens: d('reasoningOutputTokens') }
 }
 
-function turnCompleted(turn) {
+async function turnCompleted(turn) {
   if (turnDone) return
   turnDone = true
   // What was still waiting to be shown goes out first.
@@ -713,10 +820,14 @@ function turnCompleted(turn) {
     if (diffWaiting) out({ type: 'diff.updated', files: diffWaiting })
   }
   clearTimeout(liveTimer)
+  if (turn.status === 'completed') await backfill()
   const usage = turnUsage()
   if (turn.status === 'completed') out({ type: 'turn.completed', usage })
   else if (turn.status === 'interrupted') out({ type: 'turn.interrupted', usage })
-  else out({ type: 'turn.failed', error: { message: String(turn.error?.message ?? 'Codex could not finish the turn.') }, usage })
+  else {
+    const why = { ...lastKind, ...kindOf(turn.error?.codexErrorInfo) }
+    out({ type: 'turn.failed', error: { message: String(turn.error?.message ?? 'Codex could not finish the turn.'), ...why }, usage })
+  }
   for (const note of early.splice(0)) out({ type: 'steer.failed', id: note.id, text: note.text, from: note.from, error: 'Codex had already finished' })
   for (const key of [...streamTimers.keys()]) flushStream(key)
   // A failed turn is no success: the exit code says so too, for whoever reads only that.
@@ -872,6 +983,48 @@ function readJsonFile(path) {
   }
 }
 
+/** A new thread: with the ask_claude and tell_claude tools when this run gives Codex them (-Ask). */
+async function startThread(setup) {
+  if (!opts.ask) return request('thread/start', setup)
+  const tools = [
+    {
+      type: 'function',
+      name: ASK_TOOL,
+      description: opts.ask,
+      inputSchema: { type: 'object', properties: { question: { type: 'string', description: 'One short, specific question.' } }, required: ['question'], additionalProperties: false },
+    },
+    ...(opts.later
+      ? [
+          {
+            type: 'function',
+            name: LATER_TOOL,
+            description: opts.later,
+            inputSchema: { type: 'object', properties: { question: { type: 'string', description: 'One short, specific question.' } }, required: ['question'], additionalProperties: false },
+          },
+        ]
+      : []),
+    ...(opts.tell
+      ? [
+          {
+            type: 'function',
+            name: TELL_TOOL,
+            description: opts.tell,
+            inputSchema: { type: 'object', properties: { message: { type: 'string', description: 'What Claude should know, in a sentence or two.' } }, required: ['message'], additionalProperties: false },
+          },
+        ]
+      : []),
+  ]
+  try {
+    return await request('thread/start', { ...setup, dynamicTools: tools })
+  } catch (err) {
+    // A Codex that does not take these tools (its error names them, or the experimental API they need): the run goes on without them. Any other failure, such as an unsupported model, is the run's.
+    const why = err instanceof Error ? err.message : String(err)
+    if (!/dynamic.?tools|experimental/i.test(why)) throw err
+    out({ type: 'ask.unavailable', message: why })
+    return await request('thread/start', setup)
+  }
+}
+
 async function main() {
   let prompt = await readStdin()
   if (opts.envelope) {
@@ -925,8 +1078,8 @@ async function main() {
     finish(1)
   })
 
-  // The ask_claude tool needs Codex's experimental API, and so do some permission requests and a turn's additional context.
-  const hello = await request('initialize', { clientInfo: { name: 'claudex', title: 'Claudex', version: VERSION }, ...(opts.ask || opts.permitwait || Object.keys(brief.context ?? {}).length ? { capabilities: { experimentalApi: true } } : {}) })
+  // The ask_claude tool needs Codex's experimental API, and so do some permission requests, forks and a turn's additional context.
+  const hello = await request('initialize', { clientInfo: { name: 'claudex', title: 'Claudex', version: VERSION }, ...(opts.ask || opts.permitwait || opts.fork || Object.keys(brief.context ?? {}).length ? { capabilities: { experimentalApi: true } } : {}) })
   send({ method: 'initialized' })
   if (hello?.userAgent) out({ type: 'codex.version', user_agent: String(hello.userAgent), version: versionOf(hello.userAgent) })
   if (stopping) return
@@ -944,50 +1097,32 @@ async function main() {
     // Only the thread, not its whole history: Claudex never reads past turns back, and Codex has deprecated
     // loading them all on resume. A Codex too old to know the option opens it the old way.
     try {
-      opened = await request('thread/resume', { threadId: opts.thread, ...setup, excludeTurns: true })
+      try {
+        opened = await requestPatiently('thread/resume', { threadId: opts.thread, ...setup, excludeTurns: true })
+      } catch (err) {
+        if (!/excludeTurns|unknown field/i.test(err instanceof Error ? err.message : String(err))) throw err
+        opened = await requestPatiently('thread/resume', { threadId: opts.thread, ...setup })
+      }
     } catch (err) {
-      if (!/excludeTurns|unknown field/i.test(err instanceof Error ? err.message : String(err))) throw err
-      opened = await request('thread/resume', { threadId: opts.thread, ...setup })
+      // A thread that cannot be opened again says so in a way the mod can act on: it starts the round afresh.
+      const kind = resumeKind(err)
+      if (kind) {
+        err.kind = 'resume'
+        err.resume = kind
+      }
+      throw err
     }
-  } else if (opts.ask) {
-    const tools = [
-      {
-        type: 'function',
-        name: ASK_TOOL,
-        description: opts.ask,
-        inputSchema: { type: 'object', properties: { question: { type: 'string', description: 'One short, specific question.' } }, required: ['question'], additionalProperties: false },
-      },
-      ...(opts.later
-        ? [
-            {
-              type: 'function',
-              name: LATER_TOOL,
-              description: opts.later,
-              inputSchema: { type: 'object', properties: { question: { type: 'string', description: 'One short, specific question.' } }, required: ['question'], additionalProperties: false },
-            },
-          ]
-        : []),
-      ...(opts.tell
-        ? [
-            {
-              type: 'function',
-              name: TELL_TOOL,
-              description: opts.tell,
-              inputSchema: { type: 'object', properties: { message: { type: 'string', description: 'What Claude should know, in a sentence or two.' } }, required: ['message'], additionalProperties: false },
-            },
-          ]
-        : []),
-    ]
+  } else if (opts.fork) {
+    // A thread of its own that starts from another one's history (a review's, or a first attempt's), attached to it
+    // and kept out of the Codex app's lists. Codex's experimental API; anywhere it will not, a fresh thread instead.
     try {
-      opened = await request('thread/start', { ...setup, dynamicTools: tools })
+      opened = await requestPatiently('thread/fork', { threadId: opts.fork, ...setup, attachToSource: true, excludeTurns: true })
+      out({ type: 'thread.forked', from: String(opts.fork) })
     } catch (err) {
-      // A Codex that does not take these tools (its error names them, or the experimental API they need): the run goes on without them. Any other failure, such as an unsupported model, is the run's.
-      const why = err instanceof Error ? err.message : String(err)
-      if (!/dynamic.?tools|experimental/i.test(why)) throw err
-      out({ type: 'ask.unavailable', message: why })
-      opened = await request('thread/start', setup)
+      out({ type: 'fork.unavailable', message: String(err instanceof Error ? err.message : err).slice(0, 300) })
+      opened = await startThread(setup)
     }
-  } else opened = await request('thread/start', setup)
+  } else opened = await startThread(setup)
   threadId = String(opened.thread?.id ?? opts.thread ?? '')
   if (!threadId) throw new Error('Codex did not open a thread')
   out({ type: 'thread.started', thread_id: threadId })
@@ -1007,8 +1142,11 @@ async function main() {
   const input = [...images.map(path => ({ type: 'localImage', path })), { type: 'text', text: prompt, text_elements: [] }]
   let additionalContext
   const entries = Object.entries(brief.context ?? {}).filter(([, e]) => e && typeof e.value === 'string' && e.value.trim())
-  if (entries.length) additionalContext = Object.fromEntries(entries.map(([k, e]) => [k, { value: e.value, kind: e.kind === 'untrusted' ? 'untrusted' : 'application' }]))
-  const started = await request('turn/start', {
+  // Untrusted material is labelled with its name (ci_log, stack_trace) so Codex can tell the pieces apart; Codex
+  // takes a name on untrusted entries alone, in its own spelling.
+  const named = (key, e) => (e.kind === 'untrusted' && /^[a-z][a-z0-9_]{0,63}$/.test(String(e.name ?? key)) ? { name: String(e.name ?? key) } : {})
+  if (entries.length) additionalContext = Object.fromEntries(entries.map(([k, e]) => [k, { value: e.value, kind: e.kind === 'untrusted' ? 'untrusted' : 'application', ...named(k, e) }]))
+  const turn = context => ({
     threadId,
     input,
     cwd: opts.cwd || undefined,
@@ -1016,9 +1154,18 @@ async function main() {
     effort: opts.effort || undefined,
     summary: 'detailed',
     outputSchema,
-    ...(additionalContext ? { additionalContext } : {}),
+    ...(context ? { additionalContext: context } : {}),
     ...(opts.tier && opts.tier !== 'default' ? { serviceTier: opts.tier } : {}),
   })
+  let started
+  try {
+    started = await requestPatiently('turn/start', turn(additionalContext))
+  } catch (err) {
+    // A Codex from before context names (0.165 and older) that refuses them gets the context without.
+    const unnamed = additionalContext && Object.fromEntries(Object.entries(additionalContext).map(([k, { name, ...rest }]) => [k, rest]))
+    if (!unnamed || !/unknown field|name/i.test(err instanceof Error ? err.message : String(err)) || JSON.stringify(unnamed) === JSON.stringify(additionalContext)) throw err
+    started = await requestPatiently('turn/start', turn(unnamed))
+  }
   if (!turnId && started.turn?.id) {
     turnId = String(started.turn.id)
     handOverEarly()
@@ -1039,7 +1186,12 @@ main().catch(err => {
   if (finished) return
   out({
     type: 'turn.failed',
-    error: { message: err instanceof Error ? err.message : String(err), ...(err?.code !== undefined ? { code: err.code } : {}), ...(err?.data !== undefined ? { data: err.data } : {}) },
+    error: {
+      message: err instanceof Error ? err.message : String(err),
+      ...(err?.code !== undefined ? { code: err.code } : {}),
+      ...(err?.data !== undefined ? { data: err.data } : {}),
+      ...(err?.kind ? { kind: err.kind, ...(err.resume ? { resume: err.resume } : {}) } : {}),
+    },
   })
   finish(1)
 })

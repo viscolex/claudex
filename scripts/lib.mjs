@@ -20,6 +20,9 @@ export const VERSION = (() => {
   }
 })()
 
+/** The Codex releases this version of Claudex was checked against (scripts/smoke.mjs says when the found one is newer). */
+export const TESTED = { from: '0.164', to: '0.166' }
+
 /** The helper's flags, as the mod passes them: -Name value. */
 export function flags(argv = process.argv.slice(2)) {
   const out = {}
