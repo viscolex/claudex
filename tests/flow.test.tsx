@@ -1,4 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
+import { councilState } from '../hooks/register'
+import type { CodexConsult } from '../types'
 
 const ASK = 'mcp__claudex__ask'
 const TRIAGE = 'mcp__claudex__triage'
@@ -32,6 +34,7 @@ const COMPARED = {
 }
 const STOP = 'mcp__claudex__stop'
 const TELL = 'mcp__claudex__tell'
+const COUNCIL = 'mcp__claudex__council'
 const TASK_DONE = {
   summary: 'Added a reduced-motion path to the pinned scenes.',
   changes: [{ file: 'src/a.ts', what: 'Skips the animation when reduced motion is on.' }],
@@ -102,6 +105,8 @@ function world(
     resumeFails?: boolean
     /** The account holds a free usage reset. */
     resets?: boolean
+    /** Codex's score in each council round, in order (7 then 9 when not given). */
+    councilScores?: number[]
   } = {},
 ) {
   const clock = mock.clock(on, { now: 1_760_000_000_000 })
@@ -145,6 +150,7 @@ function world(
   let lookups = 0
   let moved = false
   let resumeFailed = false
+  let councilRound = 0
   goneCodex.clear()
   if (opts.stale) goneCodex.add('C:\\old\\codex.exe')
   on('process.run', (_: unknown, e: { argv: readonly string[] }) => {
@@ -221,6 +227,26 @@ function world(
     // The old Codex app's folder is gone after its update.
     if (e.argv.some(a => String(a).includes('\\old\\'))) throw new Error('The system cannot find the path specified.')
     const argv = e.argv.join(' ')
+    // A council round: Codex scores the work. Its first round waits for the review gate, so a test can hold it.
+    if (argv.includes('council.schema.json')) {
+      const n = councilRound++
+      const score = (opts.councilScores ?? [7, 9])[n] ?? 9
+      if (n === 0) yield line({ type: 'thread.started', thread_id: 'thread-council' })
+      yield line({ type: 'turn.started' })
+      yield line({ type: 'item.started', item: { id: `c${n}`, type: 'command_execution', command: 'rg limiter src' } })
+      if (n === 0) await gates.review?.wait
+      const reply = {
+        score,
+        summary: score >= 9 ? 'The limiter holds; small polish at most.' : 'Works, but the window never resets across processes.',
+        gap: score >= 9 ? '' : 'The window should reset across processes.',
+        findings: n === 0 ? [{ severity: 'high', title: 'Window never resets', file: 'src/limit.ts', line: 30, detail: 'A restart keeps the old count.', suggestion: 'Store the window start.' }] : [],
+        parked: n === 0 ? [{ title: 'A dashboard of per-user quotas', detail: 'Nice, but not in this brief.' }] : [],
+        responses: n > 0 ? [{ finding: 'F1', position: score >= 9 ? 'concede' : 'hold', text: score >= 9 ? 'Fixed: the window start is stored.' : 'Still resets on restart.' }] : [],
+      }
+      yield line({ type: 'item.completed', item: { id: `m${n}`, type: 'agent_message', text: JSON.stringify(reply) } })
+      yield line({ type: 'turn.completed', usage: { input_tokens: 40000, cached_input_tokens: 30000, output_tokens: 500, reasoning_output_tokens: 200 } })
+      return { value: { code: 0, signal: null } }
+    }
     if (opts.ticket && argv.includes('appserver.mjs') && !argv.includes(' -Thread ')) {
       yield line({ type: 'bridge.started', pid: 4343 })
       yield line({ type: 'thread.started', thread_id: 'thread-ticket' })
@@ -2215,4 +2241,201 @@ test('a finished task can be tried another way: a new task that starts from the 
   expect(env.prompt).toContain('This is a second attempt')
   expect(env.prompt).toContain('Take a clearly different approach')
   await pane.unmount()
+})
+
+const COUNCIL_BAND = {
+  plugin: 'claudex',
+  surface: 'desktop' as const,
+  component: 'AbovePrompt' as const,
+  props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 100, scroll: { offset: 0, bodyRows: 10 }, view: {} },
+}
+
+const said = (r: unknown) => String((r as { result?: unknown; deny?: unknown }).result ?? (r as { deny?: unknown }).deny)
+
+test('a council: each seat scores on its own, sealed until both are in; below the bar Claude fixes, and the next round passes', { timeoutMs: 30_000 }, async ($, on) => {
+  const w = world(on)
+  await $.session.start({ cwd: 'C:\\repo', surface: 'desktop', isInteractive: true } as never)
+  const started = said(await $.tool.call({ tool: COUNCIL, tool_use_id: 'tu-council', action: 'start', request: 'Rate-limit the public API: 100 requests a minute per key.', target: 9, rounds: 4 } as never))
+  expect(started).toContain('bar 9/10')
+  expect(started).toContain('up to 4 rounds')
+  expect(started).toContain('action "score"')
+  expect(started).toContain('fresh, read-only subagent')
+  const id = started.match(/Council (\w{4}) sits/)?.[1] as string
+  await w.clock.settle()
+  // Codex scores on the council's scale, against the brief, and gets no line to Claude while it does.
+  const first = w.spawns.find(a => a.some(x => x.endsWith('council.schema.json'))) as readonly string[]
+  expect(first).toBeDefined()
+  expect(first.includes('-Ask')).toBe(false)
+  expect(w.inputs[0]).toContain('You sit on a council with Claude')
+  expect(w.inputs[0]).toContain('The bar is 9')
+  expect(w.inputs[0]).toContain('100 requests a minute per key')
+
+  // Codex is done first: its score stays sealed, from Claude and on screen.
+  w.gates.review?.open()
+  await w.clock.settle()
+  await w.clock.advance(1500)
+  const sealedNote = w.told.find(t => t.includes('stay sealed until your seat is in')) as string
+  expect(sealedNote).toBeDefined()
+  expect(sealedNote).not.toContain('7/10')
+  const sealed = await $.ui.mount({ plugin: 'claudex', surface: 'terminal', ...card('tu-council', COUNCIL) })
+  expect(await sealed.find({ type: 'Text', text: /Council · bar 9 · round 1 of 4 — Codex has scored · Claude takes its seat/ })).toBeDefined()
+  expect(await sealed.find({ type: 'Text', text: /Window never resets/ })).toBeUndefined()
+  await sealed.unmount()
+
+  // Claude's seat goes in: the reveal, both scores at once, both seats' findings, the parked ideas and the scoreboard.
+  const reveal = said(
+    await $.tool.call({
+      tool: COUNCIL,
+      tool_use_id: 'tu-seat-1',
+      action: 'score',
+      council: id,
+      score: 8,
+      summary: 'Sound design; one gap.',
+      gap: 'No test for the reset window.',
+      findings: [{ severity: 'medium', title: 'Reset window untested', file: 'src/limit.test.ts', detail: 'Nothing checks the minute boundary.' }],
+      parked: [{ title: 'Burst allowance', detail: 'Let a key burst to 120.' }],
+    } as never),
+  )
+  expect(reveal).toContain('the reveal')
+  expect(reveal).toContain('Your seat: 8/10')
+  expect(reveal).toContain('Codex (gpt-6.1-sol): 7/10')
+  expect(reveal).toContain('F1 [high] Window never resets')
+  expect(reveal).toContain('C1 [medium] Reset window untested')
+  expect(reveal).toContain('A dashboard of per-user quotas (Codex)')
+  expect(reveal).toContain('Burst allowance (your seat)')
+  expect(reveal).toContain('| Claude')
+  expect(reveal).toContain('| 8/10 |')
+  expect(reveal).toContain('action "next"')
+  expect(reveal).toContain('take on no parked idea')
+
+  // The band shows the board; the pane's row says whose move it is, with the scores.
+  const band = await $.ui.mount(COUNCIL_BAND)
+  expect(String((await band.find({ type: 'Svg' }))?.props?.alt)).toContain('Council, bar 9 out of 10, round 1 of 4')
+  await band.unmount()
+  const pane = await $.ui.mount({ plugin: 'claudex', surface: 'terminal', ...PANE })
+  expect(await pane.find({ type: 'Text', text: /Claude: fixing after round 1/ })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: /Claude 8 · Codex 7 · bar 9 · round 1 of 4/ })).toBeDefined()
+  await pane.unmount()
+
+  // An unknown finding is refused; the fixes start round 2, which Codex scores in its own thread, told what changed.
+  expect(said(await $.tool.call({ tool: COUNCIL, action: 'next', council: id, fixed: ['F9'] } as never))).toContain('No finding F9')
+  const next = said(await $.tool.call({ tool: COUNCIL, tool_use_id: 'tu-council-2', action: 'next', council: id, fixed: ['F1', 'C1'], changes: 'The window start is stored; a test covers the boundary.', checks: 'npm test: 41 passed' } as never))
+  expect(next).toContain('Round 2 of 4')
+  await w.clock.settle()
+  const round2 = w.spawns.filter(a => a.some(x => x.endsWith('council.schema.json'))).at(-1) as readonly string[]
+  expect(round2.join(' ')).toContain('-Thread thread-council')
+  const prompt2 = w.inputs.at(-1) as string
+  expect(prompt2).toContain('What Claude says it fixed')
+  expect(prompt2).toContain('F1 (Window never resets)')
+  expect(prompt2).toContain('npm test: 41 passed')
+  expect(prompt2).not.toContain('8/10')
+
+  // Codex scores 9 and concedes F1; Claude's 9 makes the council pass.
+  const passed = said(await $.tool.call({ tool: COUNCIL, tool_use_id: 'tu-seat-2', action: 'score', council: id, score: 9, summary: 'Ready to ship.' } as never))
+  expect(passed).toContain('the council passes after 2 rounds')
+  expect(passed).not.toContain('Still open across the council')
+  expect(passed).toContain('## Council review')
+  expect(passed).toContain('Rounds: 2 · Bar: 9/10 · Passed')
+  expect(passed).toContain('| Codex GPT-6.1-Sol | 7/10 | 9/10 |')
+  expect(passed).toContain('pull request')
+  expect(said(await $.tool.call({ tool: COUNCIL, action: 'next', council: id } as never))).toContain('has passed')
+
+  // The card in the chat says it passed; the earlier round's card folded to a line.
+  const card2 = await $.ui.mount({ plugin: 'claudex', surface: 'terminal', ...card('tu-council-2', COUNCIL) })
+  expect(await card2.find({ type: 'Text', text: /the council passes/ })).toBeDefined()
+  await card2.unmount()
+  const board = await $.ui.mount({ plugin: 'claudex', surface: 'desktop', ...card('tu-council-2', COUNCIL) })
+  expect(String((await board.find({ type: 'Svg' }))?.props?.alt)).toContain('Scores so far: round 1: Claude 8, Codex 7; round 2: Claude 9, Codex 9')
+  await board.unmount()
+  const seatCard = await $.ui.mount({ plugin: 'claudex', surface: 'terminal', component: 'ToolUse', requestId: 'tu-seat-2', props: { tool_use_id: 'tu-seat-2', tool: COUNCIL, input: { action: 'score', council: id, score: 9 }, isRunning: false, isErrored: false, isInterrupted: false } } as never)
+  expect(await seatCard.find({ type: 'Text', text: /revealed: Codex 9/ })).toBeDefined()
+  await seatCard.unmount()
+  const card1 = await $.ui.mount({ plugin: 'claudex', surface: 'terminal', ...card('tu-council', COUNCIL) })
+  expect(await card1.find({ type: 'Text', text: /round 1 · Claude 8 · Codex 7/ })).toBeDefined()
+  await card1.unmount()
+})
+
+test('a council out of rounds asks first: the person grants more from the pane, a stall checks in, and Claude can end it', { timeoutMs: 30_000 }, async ($, on) => {
+  const w = world(on, { councilScores: [6, 6, 6] })
+  await $.session.start({ cwd: 'C:\\repo', surface: 'desktop', isInteractive: true } as never)
+  w.gates.review?.open()
+  const started = said(await $.tool.call({ tool: COUNCIL, tool_use_id: 'tu-c', action: 'start', request: 'Tidy the limiter.', rounds: 2 } as never))
+  expect(started).toContain('bar 9/10')
+  const id = started.match(/Council (\w{4}) sits/)?.[1] as string
+  await w.clock.settle()
+  // Codex's round is only revealed with the seat, and not before.
+  expect(said(await $.tool.call({ tool: COUNCIL, action: 'next', council: id } as never))).toContain('your seat is not in')
+  await $.tool.call({ tool: COUNCIL, action: 'score', council: id, score: 6, summary: 'Rough.' } as never)
+  await $.tool.call({ tool: COUNCIL, action: 'next', council: id, declined: [{ finding: 'F1', reason: 'Restarts are out of this brief.' }] } as never)
+  await w.clock.settle()
+  expect(w.inputs.at(-1)).toContain('F1 (Window never resets): Restarts are out of this brief.')
+  const limit = said(await $.tool.call({ tool: COUNCIL, action: 'score', council: id, score: 6, summary: 'Still rough.' } as never))
+  expect(limit).toContain('That was round 2 of 2')
+  // Codex holds after the decline: F1 is open again, and Claude is told so.
+  expect(limit).toContain('Still open across the council: F1 (Codex holds)')
+  expect(said(await $.tool.call({ tool: COUNCIL, action: 'next', council: id } as never))).toContain('without passing')
+
+  // The person grants two more rounds from the pane: Claude is told to go on.
+  const pane = await $.ui.mount({ plugin: 'claudex', surface: 'desktop', ...PANE })
+  await pane.press({ key: `thread-open-${id}` })
+  await pane.press({ key: `council-more-pane-${id}` })
+  expect(w.told.at(-1)).toContain('Sit 2 more rounds of council')
+  await pane.unmount()
+  expect(said(await $.tool.call({ tool: COUNCIL, action: 'next', council: id, go_ahead: true } as never))).toContain('Round 3 of 4')
+  await w.clock.settle()
+  // Three rounds at 6: the scores have stalled, so Claude checks in before another.
+  const stalled = said(await $.tool.call({ tool: COUNCIL, action: 'score', council: id, score: 6, summary: 'No better.' } as never))
+  expect(stalled).toContain('has not risen in 2 rounds')
+  expect(said(await $.tool.call({ tool: COUNCIL, action: 'next', council: id } as never))).toContain('stalled')
+  const ended = said(await $.tool.call({ tool: COUNCIL, action: 'end', council: id, reason: 'The rest needs a redesign.' } as never))
+  expect(ended).toContain('is closed')
+  expect(ended).toContain('## Council review')
+  expect(said(await $.tool.call({ tool: COUNCIL, action: 'score', council: id, score: 9 } as never))).toContain('has ended')
+})
+
+test('the pane convenes a council: the bar and the rounds picked there reach Claude, and nothing runs before', { timeoutMs: 30_000 }, async ($, on) => {
+  const w = world(on)
+  await $.session.start({ cwd: 'C:\\repo', surface: 'desktop', isInteractive: true } as never)
+  const pane = await $.ui.mount({ plugin: 'claudex', surface: 'desktop', ...PANE })
+  await pane.press({ key: 'new-New' })
+  await pane.press({ key: 'start-pick-council' })
+  await pane.select({ key: 'confirm-council-bar', value: '8' })
+  await pane.select({ key: 'confirm-council-rounds', value: '3' })
+  await pane.press({ key: 'confirm-go' })
+  expect(w.told.at(-1)).toContain('Convene a council on my uncommitted changes')
+  expect(w.told.at(-1)).toContain('until both reach 8, up to 3 rounds')
+  expect(w.told.at(-1)).toContain('action "start", target: 8, rounds: 3, scope: "uncommitted"')
+  expect(w.spawns.length).toBe(0)
+  await pane.unmount()
+})
+
+test('a council stalls only when the lower score rose in none of the last two rounds', () => {
+  const council = (lows: number[], rounds = 8) =>
+    lows.map((score, i) => ({
+      id: i ? `K-${i + 1}` : 'K',
+      thread: 'K',
+      round: i + 1,
+      kind: 'council',
+      from: 'claude',
+      title: 'T',
+      request: 'R',
+      model: 'gpt-6.1-sol',
+      effort: 'high',
+      status: 'done',
+      background: true,
+      createdAt: i,
+      steps: [],
+      files: [],
+      findings: [],
+      responses: [],
+      score,
+      seat: { score: score + 1, summary: '', findings: [], at: i },
+      ...(i === 0 ? { council: { target: 9, rounds, brief: 'B' } } : {}),
+    })) as unknown as CodexConsult[]
+  expect(councilState(council([7, 6, 7]), 'K')?.phase).toBe('fixing')
+  expect(councilState(council([6, 6, 6]), 'K')?.phase).toBe('stalled')
+  expect(councilState(council([6, 7, 7, 6]), 'K')?.phase).toBe('stalled')
+  expect(councilState(council([6, 7]), 'K')?.phase).toBe('fixing')
+  expect(councilState(council([6, 6, 6], 3), 'K')?.phase).toBe('limit')
+  expect(councilState(council([7, 9]), 'K')?.phase).toBe('passed')
 })

@@ -1,7 +1,7 @@
 // ---------------------------------------------------------------------------
 // Conversations and tasks: one round of talking to Codex each
 
-export type CodexKind = 'review' | 'plan' | 'question' | 'debug' | 'joint' | 'compare' | 'visual' | 'reply' | 'recheck' | 'task'
+export type CodexKind = 'review' | 'plan' | 'question' | 'debug' | 'joint' | 'compare' | 'visual' | 'reply' | 'recheck' | 'task' | 'council'
 
 export type CodexStatus = 'queued' | 'sending' | 'thinking' | 'reading' | 'done' | 'failed' | 'stopped'
 
@@ -179,6 +179,38 @@ export type CodexHeard = {
   at: number
 }
 
+/** An idea a council seat raised that goes beyond what the work set out to do: shown, never scored, left for later. */
+export type CodexParked = { title: string; detail?: string }
+
+/**
+ * A council: Claude and Codex each score the work out of 10, on their own, round after round, until
+ * every seat reaches the person's bar. Kept on the council's first round.
+ */
+export type CodexCouncil = {
+  /** The score every seat must reach, out of 10. */
+  target: number
+  /** The most rounds it sits before it stops and asks; more can be granted. */
+  rounds: number
+  /** What the work set out to do: the yardstick. What goes beyond it is parked, not scored. */
+  brief: string
+  /** Closed before it passed: by Claude (with why) or the person. */
+  ended?: { by: 'claude' | 'user'; why: string; at: number }
+}
+
+/** Claude's seat in one council round: its score, made without seeing Codex's. */
+export type CodexSeat = {
+  score: number
+  summary: string
+  /** What keeps the work from the bar, in a sentence; empty once it meets it. */
+  gap?: string
+  /** Its findings this round, by id: they live with Claude's other findings on the council's first round (C1, C2…). */
+  findings: string[]
+  parked?: CodexParked[]
+  at: number
+  /** The council call that handed it in, so its card finds it. */
+  toolUseId?: string
+}
+
 /** A build loop the person started: one builds, the other reviews, until both agree the work is done. */
 export type CodexLoop = {
   /** Codex builds in its worktree and Claude reviews each version, or Claude builds in the working tree and Codex reviews it. */
@@ -251,7 +283,7 @@ export type CodexConsult = {
   planFile?: string
   /** The whole text sent to Codex: what a retry or a queued start sends. */
   sent?: string
-  /** A joint review: Claude's own findings (C1…), made without seeing Codex's. */
+  /** Claude's own findings (C1…): a joint review's, made without seeing Codex's; a council's, from each of its seats. */
   mine?: CodexFinding[]
   /** A joint review: the solution Claude proposed on its own. */
   myTake?: string
@@ -298,6 +330,16 @@ export type CodexConsult = {
   restarted?: string
   /** What the Codex thread had used when this round ended, as Codex estimates it: credits, and dollars on a dollar plan. */
   cost?: { credits: number | null; usd: number | null; at: number }
+  /** On a council's first round: the council it sits. */
+  council?: CodexCouncil
+  /** A council round: Codex's score out of 10, what keeps it from the bar, and the ideas it parked. */
+  score?: number
+  gap?: string
+  parked?: CodexParked[]
+  /** A council round: Claude's seat. Codex's score stays sealed from Claude until this is in. */
+  seat?: CodexSeat
+  /** A council round after the first: what Claude did since the last one (fixed, declined with why, changed, checked). */
+  between?: { fixed: string[]; declined: { id: string; reason: string }[]; changes?: string; checks?: string }
 }
 
 // ---------------------------------------------------------------------------

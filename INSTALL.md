@@ -4,6 +4,7 @@ Claude and Codex, working together from Claude Code. Claudex brings Codex
 (OpenAI's coding agent, on your own ChatGPT plan) into Claude Code:
 
 - reviews and second opinions, and joint reviews where Claude and Codex compare notes
+- councils: Claude and Codex each score the work out of 10, sealed until both are in, round after round until both reach your bar (Claude fixes what is in scope between rounds)
 - tasks Codex builds in its own copy of the repo, which Claude checks and applies (whole or file by file), with one-click undo
 - build loops where they review each other's work, and bigger jobs Claude splits between them, on one board
 - a two-way line while Codex works: you or Claude send it notes; Codex tells Claude what it finds, and asks when it needs an answer, either waiting for it or carrying on while Claude thinks

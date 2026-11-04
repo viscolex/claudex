@@ -5,6 +5,8 @@ import type {
   CodexAspect as Aspect,
   CodexChat as Chat,
   CodexConsult as Consult,
+  CodexCouncil as Council,
+  CodexParked as Parked,
   CodexFinding as Finding,
   CodexFix as Fix,
   CodexJob as Job,
@@ -53,6 +55,7 @@ import {
   calm,
   continueAnimations,
   meterSvg,
+  settle,
   DUO_SIZE,
   duoSvg,
   GAUGE_SIZE,
@@ -73,6 +76,7 @@ import {
   WARN,
 } from './art'
 import { type Bead, type JourneyStep, type Motion, type RowChip, JOURNEY_HEIGHT, MINI_STAGE, PANE_HERO_HEIGHT, duetCardSvg, duetHeroSvg, jobStripSvg, journeySvg, miniStageSvg, moving, rowChipSvg, usageCardSvg, duetResultSvg, duetRowSvg, paneHeroSvg, wordmarkSvg } from './duet'
+import { COUNCIL_HEIGHT, type CouncilBoard, type CouncilSeatView, councilBoardSvg, councilChipSvg } from './council'
 import type { TileSpec, TilesProps } from './tiles'
 import type { BandHero, BandJob, BandResult, BandRow, Banter, ChipKind, ClawdMood, Family, Gauge, Growing, JobPartState, Mail, PairState, PlanView, Sprite, Stage, SteerView } from './art'
 import { describe, headline } from './parse'
@@ -1161,6 +1165,7 @@ export const TASK = 'mcp__claudex__task'
 export const APPLY = 'mcp__claudex__apply'
 export const STOP = 'mcp__claudex__stop'
 export const TELL = 'mcp__claudex__tell'
+export const COUNCIL = 'mcp__claudex__council'
 
 const KEEP_THREADS = 40
 const KEEP_STEPS = 140
@@ -1183,6 +1188,7 @@ export const KIND_LABEL: Record<Kind, string> = {
   reply: 'Reply',
   recheck: 'Re-check',
   task: 'Task',
+  council: 'Council',
 }
 
 export const STATUS_TEXT: Record<Status, string> = {
@@ -1379,6 +1385,7 @@ function checkInDue(round: number) {
  * first round's kind.
  */
 function tagOf(head: Consult) {
+  if (head.council) return 'Council'
   return head.loop ? (head.loop.builder === 'codex' ? 'Build loop' : 'Review loop') : KIND_LABEL[head.kind]
 }
 
@@ -1494,6 +1501,446 @@ function jobLine(list: Consult[], head: Consult) {
 }
 
 // ---------------------------------------------------------------------------
+// Councils: Claude and Codex each score the work out of 10, on their own,
+// round after round, until every seat reaches the person's bar. Codex's score
+// stays sealed from Claude until Claude's seat is in; then both are revealed
+// together. Between rounds Claude fixes what is in scope and runs the checks.
+// What goes beyond the brief is parked: shown, never scored, left for later.
+
+/** The bar and the most rounds a council sits, unless the person says otherwise. */
+export const COUNCIL_TARGET = 9
+export const COUNCIL_ROUNDS = 5
+/** Rounds without the lower score rising before the council checks in with the person. */
+const COUNCIL_STALL = 2
+
+/** The scale both seats score by: the one place it is said. */
+const COUNCIL_SCALE = [
+  '10: nothing left worth changing for what it set out to do.',
+  '9: ready to ship; small polish at most.',
+  '8: good, with a few real but minor issues.',
+  '7: works, but has problems to fix before it ships.',
+  '5–6: significant problems: bugs, gaps against the brief, risky parts untested.',
+  '3–4: major problems: parts of it do not work.',
+  '0–2: broken, or the wrong approach.',
+]
+
+/** A seat's score as a whole number from 0 to 10, whatever came in. */
+export function clampScore(n: unknown) {
+  const v = Math.round(Number(n))
+  return Number.isFinite(v) ? Math.min(10, Math.max(0, v)) : 0
+}
+
+export type CouncilPhase = 'scoring' | 'seat' | 'failed' | 'fixing' | 'limit' | 'stalled' | 'passed' | 'ended'
+
+/** One round on the scoreboard: each seat's score once it is in (Codex's sealed until Claude's is in too). */
+export type CouncilMark = { round: number; id: string; codex?: number; claude?: number; revealed: boolean; status: Status }
+
+/** Where a council stands: its rounds and their scores, and whose move it is. */
+export function councilState(list: Consult[], thread: string) {
+  const everything = threadOf(list, thread)
+  const head = everything[0]
+  const spec = head?.council
+  if (!head || !spec) return undefined
+  const rounds = everything.filter(c => c.kind === 'council')
+  const last = (rounds[rounds.length - 1] ?? head) as Consult
+  const n = rounds.length
+  const board: CouncilMark[] = rounds.map((r, i) => ({
+    round: i + 1,
+    id: r.id,
+    codex: r.status === 'done' && typeof r.score === 'number' ? r.score : undefined,
+    claude: r.seat?.score,
+    revealed: r.status === 'done' && typeof r.score === 'number' && Boolean(r.seat),
+    status: r.status,
+  }))
+  const low = (m: CouncilMark | undefined) => (m?.revealed ? Math.min(m.codex ?? 0, m.claude ?? 0) : undefined)
+  const now = board[n - 1]
+  const revealed = Boolean(now?.revealed)
+  const passed = revealed && (low(now) ?? 0) >= spec.target
+  const running = WAITING.has(last.status)
+  const failed = last.status === 'failed' || last.status === 'stopped'
+  const atLimit = revealed && !passed && n >= spec.rounds
+  // The lower score has not risen for a while: more of the same may not get there.
+  const recent = board.slice(Math.max(0, n - 1 - COUNCIL_STALL), n)
+  const stalled =
+    revealed &&
+    !passed &&
+    !atLimit &&
+    recent.length === COUNCIL_STALL + 1 &&
+    recent.every(m => m.revealed) &&
+    recent.slice(1).every((m, i) => (low(m) ?? 0) <= (low(recent[i]) ?? 0))
+  const phase: CouncilPhase = passed ? 'passed' : spec.ended ? 'ended' : running ? 'scoring' : failed ? 'failed' : !last.seat ? 'seat' : atLimit ? 'limit' : stalled ? 'stalled' : 'fixing'
+  // The best of the scores shown so far, for the climb: the lower seat's, round by round.
+  const lows = board.map(low)
+  return { head, spec, rounds, last, n, board, revealed, passed, phase, target: spec.target, max: Math.max(spec.rounds, n), seatIn: Boolean(last.seat), lows, low: low(now) }
+}
+
+export type CouncilState = NonNullable<ReturnType<typeof councilState>>
+
+/** A council round's verdict, from its score against the bar: what the lists and chips colour it by. */
+function councilVerdict(score: number, target: number, findings: number): Verdict {
+  if (score >= target) return findings ? 'approve_with_nits' : 'approve'
+  return score <= 4 ? 'rethink' : 'changes_needed'
+}
+
+/** The scale and the scope rule, as both seats read them. */
+function councilScale(target: number) {
+  return [
+    'Score it out of 10, on this scale:',
+    ...COUNCIL_SCALE.map(line => `- ${line}`),
+    `Score against the brief alone, and hold the bar steady from round to round: score the work as it stands, not the progress it made. The bar is ${target}.`,
+    'Ideas beyond the brief (features it did not ask for, refactors, polish outside its scope) go in parked: they never lower the score, and nobody takes them on now.',
+  ]
+}
+
+const COUNCIL_SCHEMA_LINES = (target: number) => [
+  '- score: a whole number from 0 to 10.',
+  '- summary: your view in two to four sentences.',
+  `- gap: what keeps it from ${target}, in one sentence; empty when it reaches ${target}.`,
+  '- findings: the in-scope problems that cost it points, most severe first, or empty. detail says what goes wrong and when; suggestion says how to fix it.',
+  '- parked: ideas beyond the brief (title and detail), or empty.',
+]
+
+/** Codex's first round on a council: the brief, what to look at, the scale. */
+function councilFirstPrompt(input: { request: string; brief: string; target: number; rounds: number; scope?: string; files: string[]; lens?: Lens; background: boolean }) {
+  const lines = [
+    `You sit on a council with Claude (another AI coding agent working with the user). Each of you reviews the same work on your own and scores it out of 10; neither sees the other's score until both are in. The council sits up to ${plural(input.rounds, 'round')}, until every seat scores at least ${input.target}. Between rounds Claude fixes what is in scope and runs the checks, and you score the work again.`,
+    '',
+    'What the work sets out to do (the brief, and your yardstick):',
+    input.brief.trim(),
+  ]
+  if (input.request.trim() && input.request.trim() !== input.brief.trim()) lines.push('', "Claude's request:", input.request.trim())
+  if (input.background) lines.push('', 'Attached as context: Claude\'s background ("background").')
+  if (input.scope) lines.push('', `What to review: ${input.scope}`)
+  if (input.files.length) lines.push('', `Look first at: ${input.files.join(', ')}`)
+  const lens = input.lens ? LENSES[input.lens]?.words : ''
+  if (lens) lines.push('', lens)
+  lines.push('', ...councilScale(input.target), '', 'Your final reply must match the JSON schema:', ...COUNCIL_SCHEMA_LINES(input.target), '- responses: empty.')
+  return lines.join('\n')
+}
+
+/** Codex's next round: what Claude did since the last, its own findings so far, and the same scale. */
+function councilNextPrompt(o: { n: number; target: number; between: NonNullable<Consult['between']>; theirs: Finding[]; mine: Finding[] }) {
+  const titleOf = (id: string) => [...o.theirs, ...o.mine].find(f => f.id === id)?.title
+  const named = (id: string) => `${id}${titleOf(id) ? ` (${titleOf(id)})` : ''}`
+  const lines = [`Council round ${o.n}: Claude has worked on the code since the last round. Score it again as it stands now, using the current files and \`git diff\`.`]
+  if (o.between.fixed.length) lines.push('', 'What Claude says it fixed:', ...o.between.fixed.map(id => `- ${named(id)}`))
+  if (o.between.declined.length) lines.push('', 'What Claude declined, and why:', ...o.between.declined.map(d => `- ${named(d.id)}: ${d.reason}`))
+  if (o.between.changes) lines.push('', 'What Claude changed:', o.between.changes.trim())
+  if (o.between.checks) lines.push('', 'Checks Claude ran:', o.between.checks.trim())
+  if (o.theirs.length) lines.push('', 'Your findings so far:', ...o.theirs.map(f => `- ${f.id}: ${f.title}${f.file ? ` (${where(f)})` : ''} [${f.state === 'dismissed' ? 'declined' : f.state}]`))
+  lines.push(
+    '',
+    `The same brief, the same scale, the same bar (${o.target}).`,
+    '',
+    'Reply in the same JSON schema:',
+    '- responses: one per finding of yours above, by its id: concede if it is resolved (or you accept its decline), hold if it is still a problem (say why), refine if it is partly resolved.',
+    '- findings: only problems you have not raised before.',
+    '- score, summary and gap: the work as it stands now.',
+    '- parked: new ideas beyond the brief, or empty.',
+  )
+  return lines.join('\n')
+}
+
+type CouncilReply = { score: number; summary: string; gap: string; findings: Reply['findings']; parked: Parked[]; responses: Response[] }
+
+function parseCouncil(text: string): CouncilReply | undefined {
+  const v = jsonOf(text) as Partial<CouncilReply> | undefined
+  if (!v || typeof v.summary !== 'string' || !Number.isFinite(Number(v.score))) return undefined
+  return {
+    score: clampScore(v.score),
+    summary: v.summary,
+    gap: typeof v.gap === 'string' ? v.gap : '',
+    findings: Array.isArray(v.findings) ? v.findings : [],
+    parked: (Array.isArray(v.parked) ? v.parked : []).filter(p => p && typeof p.title === 'string' && p.title.trim()).map(p => ({ title: p.title.trim(), detail: typeof p.detail === 'string' && p.detail.trim() ? p.detail.trim() : undefined })),
+    responses: Array.isArray(v.responses) ? v.responses : [],
+  }
+}
+
+/** Codex's round lands: its score and findings, kept sealed from Claude until Claude's seat is in. */
+async function finishCouncil($: Engine, id: string, reply: CouncilReply, finishedAt: number) {
+  await update($, consults, list => {
+    const mine = list.find(c => c.id === id)
+    if (!mine) return list
+    const head = list.find(c => c.thread === mine.thread && c.round === 1)
+    const target = head?.council?.target ?? COUNCIL_TARGET
+    const used = threadFindings(list, mine.thread).length
+    const findings: Finding[] = reply.findings.map((f, i) => ({
+      id: `F${used + i + 1}`,
+      severity: f.severity === 'high' || f.severity === 'low' ? f.severity : 'medium',
+      title: f.title,
+      file: f.file ?? undefined,
+      line: f.line ?? undefined,
+      detail: f.detail,
+      suggestion: f.suggestion ?? undefined,
+      state: 'open',
+    }))
+    // Codex's latest word on each earlier finding settles its state: a concession closes it (a decline it accepts
+    // stays declined); holding or refining it reopens it, whatever Claude claimed. Claude's claim stays on the
+    // round's `between`, so both sides are kept.
+    const answered = (f: Finding): Finding => {
+      const answers = reply.responses.filter(r => String(r.finding).trim().toUpperCase() === f.id)
+      const latest = answers[answers.length - 1]
+      if (!latest) return f
+      const replies = [...(f.replies ?? []), ...answers.map(r => ({ round: mine.round, position: r.position, text: r.text }))]
+      if (latest.position === 'concede') return { ...f, replies, state: f.state === 'dismissed' ? 'dismissed' : 'fixed' }
+      return { ...f, replies, state: 'open', applied: undefined }
+    }
+    return list.map(c => {
+      if (c.id === id) {
+        return {
+          ...c,
+          status: 'done' as Status,
+          finishedAt,
+          score: reply.score,
+          gap: reply.gap.trim() || undefined,
+          parked: reply.parked.length ? reply.parked : undefined,
+          verdict: councilVerdict(reply.score, target, findings.length),
+          summary: reply.summary,
+          findings,
+          responses: reply.responses,
+          note: undefined,
+        }
+      }
+      if (c.thread !== mine.thread || !reply.responses.length) return c
+      return { ...c, findings: c.findings.map(answered) }
+    })
+  })
+}
+
+/** The seat Claude hands in for the council's current round: its score, made without seeing Codex's. */
+export async function submitSeat(
+  $: Engine,
+  thread: string,
+  seat: { score: number; summary: string; gap?: string; findings: Omit<Finding, 'id' | 'state'>[]; parked?: Parked[]; toolUseId?: string },
+) {
+  const list = await all($)
+  const s = councilState(list, thread)
+  if (!s) throw new Error(`${thread} is not a council. Start one with ${COUNCIL} (action "start").`)
+  if (s.phase === 'passed' || s.phase === 'ended') throw new Error(`Council ${thread} has ${s.phase === 'passed' ? 'passed' : 'ended'}; it takes no more scores.`)
+  if (s.last.seat) {
+    throw new Error(
+      s.revealed
+        ? `Your seat for round ${s.n} of ${thread} is in and revealed. Fix what you agree with, then start round ${s.n + 1} with ${COUNCIL} (action "next").`
+        : `Your seat for round ${s.n} of ${thread} is already in; Codex's score follows when it has scored.`,
+    )
+  }
+  const used = (s.head.mine ?? []).length
+  const mine: Finding[] = seat.findings.map((f, i) => ({ ...f, id: `C${used + i + 1}`, state: 'open' }))
+  const at = Date.now()
+  await update($, consults, current =>
+    current.map(c => {
+      if (c.id === s.head.id && mine.length) c = { ...c, mine: [...(c.mine ?? []), ...mine] }
+      if (c.id === s.last.id) c = { ...c, seat: { score: clampScore(seat.score), summary: seat.summary.trim(), gap: seat.gap?.trim() || undefined, findings: mine.map(f => f.id), parked: seat.parked?.length ? seat.parked : undefined, at, toolUseId: seat.toolUseId } }
+      return c
+    }),
+  )
+  await persist($)
+  const now2 = await all($)
+  const round = now2.find(c => c.id === s.last.id) as Consult
+  if (round.status === 'done') return councilText(round, now2)
+  if (WAITING.has(round.status)) {
+    return `Your seat for council ${thread}, round ${s.n}, is in: ${clampScore(seat.score)}/10, sealed. Codex is still scoring; the reveal comes as a message once it has. Carry on meanwhile, but change nothing it is looking at.`
+  }
+  return `Your seat for council ${thread}, round ${s.n}, is in, but Codex's round ${round.status === 'failed' ? 'failed' : 'was stopped'}${round.error ? ` (${round.error})` : ''}. The user can run it again from its card; the reveal then follows by itself.`
+}
+
+/** What a council's scoreboard says, as Markdown: for Claude's report and a pull request's description. */
+export function councilMarkdown(list: Consult[], thread: string) {
+  const s = councilState(list, thread)
+  if (!s) return ''
+  const cell = (v: number | undefined, sealed: boolean) => (typeof v === 'number' ? `${v}/10` : sealed ? 'sealed' : 'no score')
+  const shown = s.board.filter(m => m.revealed || m.round === s.n)
+  const where2 = s.phase === 'passed' ? 'Passed' : s.phase === 'ended' ? 'Ended early' : s.revealed ? 'Below the bar' : 'In session'
+  return [
+    '## Council review',
+    '',
+    `Rounds: ${s.board.filter(m => m.revealed).length} · Bar: ${s.target}/10 · ${where2}`,
+    '',
+    `| Seat | ${shown.map(m => `Round ${m.round}`).join(' | ')} |`,
+    `| --- | ${shown.map(() => '---').join(' | ')} |`,
+    `| Claude${host.claudeModel ? ` ${host.claudeModel}` : ''} | ${shown.map(m => cell(m.claude, false)).join(' | ')} |`,
+    `| Codex ${codexName(s.head.model)} | ${shown.map(m => cell(m.revealed ? m.codex : undefined, m.codex !== undefined)).join(' | ')} |`,
+  ].join('\n')
+}
+
+/** What Claude does on its seat: review on its own, score it, hand it in. The one place it is said. */
+function seatWords(thread: string, target: number) {
+  return [
+    `Take your seat: review the work on your own against the brief, without reading Codex's findings. Best in a fresh, read-only subagent (the Agent tool) given only the brief and what to look at, so your seat is not scoring work you wrote.`,
+    `Score it out of 10 on the council's scale (10 nothing left worth changing for what it set out to do; 9 ready to ship, small polish at most; 8 good, a few real but minor issues; 7 works but needs fixes before it ships; 5–6 significant problems; 4 or less major problems). The bar is ${target}. Ideas beyond the brief go in parked, not the score.`,
+    `Hand it in with ${COUNCIL} (action "score", council "${thread}", score, summary, gap, findings, parked).`,
+  ].join(' ')
+}
+
+/** A council round, as Claude reads it: sealed until its seat is in, then the reveal and what to do next. */
+function councilText(c: Consult, list: Consult[]) {
+  const s = councilState(list, c.thread) as CouncilState
+  const n = s.rounds.findIndex(r => r.id === c.id) + 1 || s.n
+  const tag = `Council ${c.thread}, round ${n} of ${s.max}`
+  if (s.phase === 'ended') {
+    const ended = s.spec.ended
+    return `Council ${c.thread} has ended${ended ? `, by ${ended.by === 'user' ? 'the user' : 'you'}: ${ended.why}` : ''}. Start no more rounds of it. If the user has not heard where it stood, tell them: the scoreboard, what was still between the work and ${s.target}, and the parked ideas.\n\n${councilMarkdown(list, c.thread)}`
+  }
+  if (c.status === 'failed' || c.status === 'stopped') return `${tag}: Codex did not score (${c.error ?? c.status}). The user can run it again from its card; your seat stands.`
+  if (!c.seat) return `${tag}: Codex has scored it after ${elapsed(c)}. Its score and findings stay sealed until your seat is in. ${seatWords(c.thread, s.target)}`
+  const mine = (s.head.mine ?? []).filter(f => c.seat?.findings.includes(f.id))
+  const lines = [
+    `${tag}: the reveal. Bar: ${s.target}/10.`,
+    '',
+    `Your seat: ${c.seat.score}/10. ${c.seat.summary}${c.seat.gap ? ` To reach ${s.target}: ${c.seat.gap}` : ''}`,
+    `Codex (${c.model}): ${c.score ?? '?'}/10. ${c.summary ?? ''}${c.gap ? ` To reach ${s.target}: ${c.gap}` : ''}`,
+  ]
+  if (c.responses.length) {
+    const titles = new Map(threadFindings(list, c.thread).map(f => [f.id, f.title]))
+    lines.push('', 'Codex on its earlier findings:', ...c.responses.map(r => `- ${r.finding} (${titles.get(String(r.finding).toUpperCase()) ?? 'finding'}): ${POSITION[r.position] ?? r.position} — ${r.text}`))
+  }
+  lines.push('', "Codex's findings:", c.findings.length ? findingLines(c.findings) : '(none new)')
+  if (mine.length) lines.push('', "Your seat's findings:", findingLines(mine))
+  const parked = [...(c.parked ?? []).map(p => ({ ...p, by: 'Codex' })), ...(c.seat.parked ?? []).map(p => ({ ...p, by: 'your seat' }))]
+  if (parked.length) lines.push('', 'Parked (beyond the brief: not scored, not for now):', ...parked.map(p => `- ${p.title} (${p.by})${p.detail ? `: ${p.detail}` : ''}`))
+  const open = allFindings(list, c.thread).filter(x => x.f.state === 'open').map(x => x.f)
+  if (open.length) {
+    lines.push('', `Still open across the council: ${open.map(f => `${f.id}${f.replies?.at(-1)?.position === 'hold' ? ' (Codex holds)' : f.replies?.at(-1)?.position === 'refine' ? ' (Codex: partly)' : ''}`).join(', ')}.`)
+  }
+  lines.push('', councilMarkdown(list, c.thread), '', 'Next:')
+  if (s.phase === 'passed') {
+    lines.push(
+      `Every seat is at ${s.target} or more: the council passes after ${plural(n, 'round')}. Start no more rounds; small polish you agree with needs no further round. Tell the user: the scoreboard, what changed along the way, what you declined and why, and the parked ideas as follow-ups. If this work ends in a pull request, put the "Council review" section above in its description, before the closing model line (edit the description; do not post a comment).`,
+    )
+  } else if (s.phase === 'limit') {
+    lines.push(
+      `That was round ${n} of ${s.max}, still below the bar. Stop here and tell the user: the scores, what still stands between the work and ${s.target} (both gaps), and the parked ideas; ask whether to sit more rounds. If they agree, fix what is in scope and call ${COUNCIL} (action "next", go_ahead: true); each such call adds a round.`,
+    )
+  } else if (s.phase === 'stalled') {
+    lines.push(
+      `The lower score has not risen in ${plural(COUNCIL_STALL, 'round')}: more of the same may not get there. Before another round, check in with the user: what stands between the work and ${s.target}, and whether that is still within the brief. If they say go on, fix what is in scope and call ${COUNCIL} (action "next", go_ahead: true).`,
+    )
+  } else {
+    lines.push(
+      `Below the bar. Check every finding, both seats', against the code: either seat can be wrong. Fix the in-scope ones you agree with; take on no parked idea, and treat a finding that asks for more than the brief as parked, whoever raised it (keep the scope where it is). Run the checks the change needs (tests, types, lint). Then call ${COUNCIL} (action "next", council "${c.thread}", fixed: the ids you fixed, declined: the ids you will not fix and why, changes: what you changed, checks: what ran and how it went). Codex scores again with its context, and you take your seat again, with fresh eyes.`,
+    )
+  }
+  return lines.join('\n')
+}
+
+/** Starts a council's next round, after Claude's fixes: Codex scores again in the same thread, and Claude takes its seat again. */
+export async function nextCouncilRound(
+  $: Engine,
+  thread: string,
+  r: { fixed: string[]; declined: { id: string; reason: string }[]; changes?: string; checks?: string; goAhead: boolean; from: 'claude' | 'user'; toolUseId?: string; background: boolean },
+) {
+  const list = await all($)
+  const s = councilState(list, thread)
+  if (!s) throw new Error(`${thread} is not a council.`)
+  const away = elsewhereProblem(list, thread)
+  if (away) throw new Error(away)
+  if (s.phase === 'passed') throw new Error(`Council ${thread} has passed: every seat reached ${s.target}. Tell the user; it needs no further round.`)
+  if (s.phase === 'ended') throw new Error(`Council ${thread} has ended. Start a new council to score the work again.`)
+  if (s.phase === 'scoring') throw new Error(`Codex is still scoring round ${s.n} of ${thread}; wait for the reveal.`)
+  if (s.phase === 'failed') throw new Error(`Codex's round ${s.n} of ${thread} did not finish. The user can run it again from its card.`)
+  if (s.phase === 'seat') throw new Error(`Round ${s.n} of ${thread} is not revealed yet: your seat is not in. ${seatWords(thread, s.target)}`)
+  if ((s.phase === 'limit' || s.phase === 'stalled') && !r.goAhead) {
+    throw new Error(
+      s.phase === 'limit'
+        ? `Council ${thread} has sat all ${plural(s.max, 'round')} without passing. Ask the user whether to sit more; if they say yes, call again with go_ahead: true (each call adds a round).`
+        : `Council ${thread}'s scores have stalled. Check in with the user first; if they say go on, call again with go_ahead: true.`,
+    )
+  }
+  const codexThread = latestThread(s.rounds)
+  if (!codexThread) throw new Error(`Council ${thread} has no Codex thread to carry on.`)
+  // Each finding named must be the council's: Codex's (F) or a seat's (C).
+  const known = allFindings(list, thread).map(x => x.f)
+  const norm = (id: string) => id.trim().toUpperCase()
+  const unknown = [...r.fixed, ...r.declined.map(d => d.id)].map(norm).filter(id => !known.some(f => f.id === id))
+  if (unknown.length) throw new Error(`No finding ${unknown.join(', ')} in council ${thread}. Its findings: ${known.map(f => f.id).join(', ') || 'none'}.`)
+  const fixed = [...new Set(r.fixed.map(norm))]
+  const declined = r.declined.map(d => ({ id: norm(d.id), reason: d.reason.trim() || 'declined' })).filter(d => !fixed.includes(d.id))
+  const n = s.n + 1
+  const round = s.last.round + 1
+  const between = { fixed, declined, changes: r.changes?.trim() || undefined, checks: r.checks?.trim() || undefined }
+  // What Claude did lands on the findings themselves: fixed ones stay so until Codex concedes or holds.
+  const stamp = (f: Finding): Finding => {
+    if (fixed.includes(f.id)) return { ...f, state: 'fixed', stance: f.stance ?? 'agree', applied: Date.now() }
+    const d = declined.find(x => x.id === f.id)
+    return d ? { ...f, state: 'dismissed', stance: 'disagree', note: d.reason } : f
+  }
+  const consult: Consult = {
+    id: `${thread}-${round}`,
+    thread,
+    round,
+    kind: 'council',
+    from: r.from,
+    toolUseId: r.toolUseId,
+    title: s.head.title,
+    request: `Round ${n}: score it again as it stands now.`,
+    scope: s.head.scope,
+    model: s.last.model,
+    effort: s.head.effort,
+    codexThread,
+    between,
+    chat: thisChat() || undefined,
+    cwd: host.cwd || undefined,
+    status: 'sending',
+    background: r.background,
+    createdAt: Date.now(),
+    steps: [],
+    files: [],
+    findings: [],
+    responses: [],
+  }
+  await update($, consults, current => [
+    consult,
+    ...current.map(c =>
+      c.thread !== thread
+        ? c
+        : {
+            ...c,
+            findings: c.findings.map(stamp),
+            ...(c.mine ? { mine: c.mine.map(stamp) } : {}),
+            // Going on past the limit (the person agreed) adds the round it takes.
+            ...(c.id === s.head.id && c.council && n > c.council.rounds ? { council: { ...c.council, rounds: n } } : {}),
+          },
+    ),
+  ])
+  const after = await all($)
+  const prompt = councilNextPrompt({ n, target: s.target, between, theirs: threadFindings(after, thread).filter(f => f.id.startsWith('F')), mine: after.find(c => c.id === s.head.id)?.mine ?? [] })
+  await patch($, consult.id, c => ({ ...c, sent: prompt }))
+  return { consult: { ...consult, sent: prompt }, prompt }
+}
+
+/** Closes a council before it passed: Claude (with why) or the person. */
+export async function endCouncil($: Engine, thread: string, by: 'claude' | 'user', why: string) {
+  const s = councilState(await all($), thread)
+  if (!s) throw new Error(`${thread} is not a council.`)
+  if (s.phase === 'passed' || s.phase === 'ended') return
+  // Closed first: a round it stops then lands as part of an ended council, not as one to run again.
+  await patch($, s.head.id, c => (c.council ? { ...c, council: { ...c.council, ended: { by, why: cut(why.trim() || 'Ended', 300), at: Date.now() } } } : c))
+  await persist($)
+  for (const r of s.rounds) if (WAITING.has(r.status)) await stopConsult($, r.id)
+}
+
+/** The council in a few words, for its row and its card: the scores and where it stands. */
+function councilWords(s: CouncilState) {
+  const m = s.board[s.n - 1]
+  const scores = m?.revealed ? `Claude ${m.claude} · Codex ${m.codex}` : ''
+  const round = `round ${s.n} of ${s.max}`
+  switch (s.phase) {
+    case 'passed':
+      return `${scores} · passed in ${plural(s.n, 'round')}`
+    case 'ended':
+      return `ended in ${round}${scores ? ` at ${scores}` : ''}`
+    case 'scoring':
+      return `${round} · bar ${s.target}${s.seatIn ? " · Claude's seat is in" : ''}`
+    case 'seat':
+      return `Codex has scored · ${round} · bar ${s.target}`
+    case 'failed':
+      return `Codex did not score · ${round}`
+    default:
+      return `${scores} · bar ${s.target} · ${round}`
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Whose move it is: Codex at work, Claude's turn, the person's, or done. The
 // rows, the chat cards, the band and the pane all say it in these words.
 
@@ -1526,7 +1973,9 @@ export function moveOf(list: Consult[], thread: string): { who: Mover; words: st
         ? live.round > 1
           ? 'revising'
           : 'building'
-        : live.kind === 'recheck'
+        : live.kind === 'council'
+          ? `scoring round ${(councilState(list, thread)?.n ?? live.round)}${live.seat ? " · Claude's seat is in" : ''}`
+          : live.kind === 'recheck'
           ? 're-checking'
           : live.kind === 'compare'
             ? 'comparing notes'
@@ -1542,6 +1991,15 @@ export function moveOf(list: Consult[], thread: string): { who: Mover; words: st
   // Claude's turn, while it is fresh; left long enough, it is the person's to pick up.
   const fresh = Date.now() - (last.finishedAt ?? last.createdAt) < CLAUDE_TURN_MS
   const claude = (words: string, stale: string) => (fresh ? { who: 'claude' as const, words } : { who: 'you' as const, words: stale })
+  const council = councilState(list, thread)
+  if (council) {
+    if (council.phase === 'passed') return { who: 'done', words: `passed in ${plural(council.n, 'round')}` }
+    if (council.phase === 'ended') return { who: 'done', words: 'council ended' }
+    if (council.phase === 'limit') return { who: 'you', words: 'out of rounds: more, or stop?' }
+    if (council.phase === 'stalled') return { who: 'you', words: 'scores stalled: keep going?' }
+    if (council.phase === 'seat') return claude(`taking its seat · round ${council.n}`, "the council waits for Claude's seat")
+    return claude(`fixing after round ${council.n}`, 'the council is waiting')
+  }
   const loop = loopState(list, thread)
   if (loop) {
     if (loop.approved) return { who: 'done', words: builds ? 'applied' : 'approved' }
@@ -1602,8 +2060,18 @@ function timelineOf(list: Consult[], thread: string) {
   const rounds = threadOf(list, thread)
   const head = rounds[0] as Consult
   const steps: { who: Mover; text: string }[] = []
+  const council = councilState(list, thread)
   for (const c of rounds) {
     const asker: Mover = c.from === 'user' ? 'you' : 'claude'
+    if (c.kind === 'council') {
+      if (c.between) steps.push({ who: 'claude', text: `fixed ${c.between.fixed.length}${c.between.declined.length ? `, declined ${c.between.declined.length}` : ''}` })
+      steps.push({ who: c.round === 1 ? asker : 'claude', text: `called round ${(council?.rounds.findIndex(r => r.id === c.id) ?? 0) + 1}` })
+      if (WAITING.has(c.status)) steps.push({ who: 'codex', text: 'scoring…' })
+      else if (c.status === 'failed' || c.status === 'stopped') steps.push({ who: 'codex', text: c.status })
+      else steps.push({ who: 'codex', text: c.seat ? `scored ${c.score}` : 'scored (sealed)' })
+      if (c.seat) steps.push({ who: 'claude', text: `scored ${c.seat.score}` })
+      continue
+    }
     if (c.kind === 'compare') steps.push({ who: 'claude', text: `sent its ${plural(head.mine?.length ?? 0, 'finding')}` })
     else if (c.kind === 'recheck') steps.push({ who: asker, text: 'asked for a re-check' })
     else if (c.kind === 'reply') steps.push({ who: asker, text: c.context ? 'disputed' : 'replied' })
@@ -1639,6 +2107,8 @@ function timelineOf(list: Consult[], thread: string) {
     if (work?.state === 'discarded') steps.push({ who: 'claude', text: 'discarded it' })
   }
   if (head.agreed) steps.push({ who: 'done', text: 'agreed on a fix' })
+  if (council?.phase === 'passed') steps.push({ who: 'done', text: `passed at ${council.low}` })
+  else if (council?.phase === 'ended') steps.push({ who: 'done', text: 'ended' })
   return steps
 }
 
@@ -1886,7 +2356,7 @@ const RUN_FIELDS = ['status', 'steps', 'files', 'note', 'plan_items', 'steers', 
  * owner's stands; after that the newest copy wins, since triage, apply, discard and undo may happen
  * in another chat of the same project.
  */
-const RESULT_FIELDS = ['verdict', 'summary', 'answer', 'findings', 'responses', 'shots', 'images', 'task'] as const
+const RESULT_FIELDS = ['verdict', 'summary', 'answer', 'findings', 'responses', 'shots', 'images', 'task', 'score', 'gap', 'parked'] as const
 
 /** The newest version of each round from the old history, the other chats' files and this chat's own; its run as its own chat has it. */
 function newest(extra: Iterable<Consult>) {
@@ -2517,7 +2987,7 @@ function tierFor(tier: string | undefined, model: string | undefined, inf: Info 
 
 function argvFor(c: Consult, codex: string, root: string, tier?: string) {
   const isTask = c.kind === 'task'
-  const schema = joinPath(root, 'schemas', `${isTask ? 'task' : c.kind === 'compare' ? 'compare' : 'reply'}.schema.json`)
+  const schema = joinPath(root, 'schemas', `${isTask ? 'task' : c.kind === 'compare' ? 'compare' : c.kind === 'council' ? 'council' : 'reply'}.schema.json`)
   const cwd = isTask ? (c.task?.worktree ?? host.cwd) : host.cwd
   return [
     'node',
@@ -2543,8 +3013,8 @@ function argvFor(c: Consult, codex: string, root: string, tier?: string) {
     ...(!c.codexThread && c.forkFrom ? ['-Fork', c.forkFrom] : []),
     ...(c.images?.length ? ['-Images', JSON.stringify(c.images)] : []),
     // Codex may ask Claude, and tell it things, when Claude can take them: not while Claude waits on this
-    // very run (a call with wait: true), and not in a joint review, whose two looks stay independent.
-    ...(c.background && c.kind !== 'joint' && c.kind !== 'compare' ? ['-Ask', ASK_CLAUDE, '-AskWait', String(ASK_WAIT_MS), '-Tell', TELL_CLAUDE, '-Later', ASK_LATER] : []),
+    // very run (a call with wait: true), and not in a joint review or a council, whose looks stay independent.
+    ...(c.background && c.kind !== 'joint' && c.kind !== 'compare' && c.kind !== 'council' ? ['-Ask', ASK_CLAUDE, '-AskWait', String(ASK_WAIT_MS), '-Tell', TELL_CLAUDE, '-Later', ASK_LATER] : []),
     // What Codex's own tools ask permission for goes to the person, in every run.
     '-PermitWait',
     String(PERMIT_WAIT_MS),
@@ -2734,7 +3204,7 @@ async function runRound($: Engine, id: string, prompt: string): Promise<Consult 
       },
       thinking: async (item, text) => think(item, text, false),
       message: async (item, text) => {
-        if ((ready.kind === 'task' ? parseTask(text) : parseReply(text)) !== undefined) final = text
+        if ((ready.kind === 'task' ? parseTask(text) : ready.kind === 'council' ? parseCouncil(text) : parseReply(text)) !== undefined) final = text
         else if (text.trim()) await say(item, 'Note', headline(text))
       },
       todo: async items => {
@@ -2855,6 +3325,8 @@ async function runRound($: Engine, id: string, prompt: string): Promise<Consult 
     await apply(c => ({ ...c, status: 'stopped', error: 'Stopped', finishedAt }))
   } else if (!failure && first.kind === 'task' && final) {
     await finishTask($, id, parseTask(final) as TaskReply, finishedAt)
+  } else if (!failure && final && first.kind === 'council') {
+    await finishCouncil($, id, parseCouncil(final) as CouncilReply, finishedAt)
   } else if (!failure && final) {
     await finishReview($, id, parseReply(final) as Reply, finishedAt)
   } else {
@@ -3793,6 +4265,7 @@ export type Start = {
   targets?: { label: string; url: string }[]
   loop?: Loop
   job?: Job
+  council?: Council
 }
 
 export async function startFirst($: Engine, s: Start) {
@@ -3823,6 +4296,7 @@ export async function startFirst($: Engine, s: Start) {
     sealed: s.kind === 'joint' ? true : undefined,
     loop: s.loop,
     job: s.job,
+    council: s.council,
     chat: thisChat() || undefined,
     cwd: host.cwd || undefined,
     createdAt: Date.now(),
@@ -3834,7 +4308,9 @@ export async function startFirst($: Engine, s: Start) {
   const prompt =
     s.kind === 'task'
       ? taskPrompt({ from: s.from, request: s.request, files: s.files })
-      : firstPrompt({
+      : s.kind === 'council' && s.council
+        ? councilFirstPrompt({ request: s.request, brief: s.council.brief, target: s.council.target, rounds: s.council.rounds, scope: s.scope?.words, files: s.files, lens: s.lens, background: Boolean(s.context) })
+        : firstPrompt({
           kind: s.kind,
           from: s.from,
           request: s.request,
@@ -3872,6 +4348,7 @@ export async function startReply(
   const head = rounds[0]
   if (!last || !head) throw new Error(`No Codex conversation ${thread}.`)
   if (head.kind === 'task') throw new Error(`${thread} is a task; ask about it in a new conversation.`)
+  if (head.council) throw new Error(`${thread} is a council: its rounds go on with ${COUNCIL} (action "next" after your fixes, "score" for your seat).`)
   const away = elsewhereProblem(list, thread)
   if (away) throw new Error(away)
   const codexThread = latestThread(rounds)
@@ -4059,6 +4536,10 @@ export async function retryConsult($: Engine, id: string) {
     verdict: undefined,
     summary: undefined,
     answer: undefined,
+    // A council round scores afresh; Claude's seat, if it is in, stands.
+    score: undefined,
+    gap: undefined,
+    parked: undefined,
     tokens: undefined,
     startedAt: undefined,
     finishedAt: undefined,
@@ -4284,6 +4765,7 @@ export async function recordTriage(
 export function resultText(c: Consult, list: Consult[]) {
   const lines: string[] = []
   if (c.kind === 'task') return taskText(c, fixList(threadOf(list, c.thread)[0]))
+  if (c.kind === 'council' && councilState(list, c.thread)) return councilText(c, list)
   const joint = threadOf(list, c.thread)[0]?.kind === 'joint'
   if (joint && (c.kind === 'joint' || c.kind === 'compare' || c.kind === 'reply')) {
     const text = jointText(c, list)
@@ -4471,8 +4953,11 @@ async function announce($: Engine, c: Consult) {
   const loop = loopState(await all($), c.thread)
   const codexBuilds = loop?.loop.builder === 'codex'
   let toast = ''
+  const council = c.kind === 'council' ? councilState(await all($), c.thread) : undefined
   if (c.status === 'stopped') toast = ''
   else if (c.status !== 'done') toast = `Codex could not finish — ${cut(c.title, 40)}`
+  else if (council && !c.seat) toast = `Codex has scored round ${council.n} · sealed until Claude's seat is in — ${cut(c.title, 30)}`
+  else if (council) toast = council.phase === 'passed' ? `The council passes · Claude ${c.seat?.score} · Codex ${c.score} — ${cut(c.title, 34)}` : `Council round ${council.n} · Claude ${c.seat?.score} · Codex ${c.score} · bar ${council.target} — ${cut(c.title, 30)}`
   else if (c.kind === 'task' && codexBuilds && loop)
     toast = c.task?.state === 'ready' ? `Codex finished round ${loop.round} · Claude reviews it — ${cut(c.title, 30)}` : `Codex changed nothing in round ${loop.round} — ${cut(c.title, 34)}`
   else if (c.kind === 'task') toast = c.task?.state === 'ready' ? `Codex finished the task · Claude checks it and applies it — ${cut(c.title, 32)}` : `Codex made no changes — ${cut(c.title, 40)}`
@@ -4482,6 +4967,7 @@ async function announce($: Engine, c: Consult) {
   if (toast) $.ui.toast(toast, { timeoutMs: 6000 })
   // In a loop where Codex builds, each finished version is Claude's turn, whoever started it.
   const list = await all($)
+  if (councilState(list, c.thread)?.phase === 'ended') return
   const job = jobLine(list, threadOf(list, c.thread)[0] ?? c)
   const withJob = (text: string) => (job ? `${text}\n\n${job}` : text)
   // What goes to Claude is waiting for it until it arrives; a run Claude waited on came back in its tool call.
@@ -6408,11 +6894,42 @@ function jointStage(list: Consult[], thread: string, at: number): Stage {
   }
 }
 
+const COUNCIL_STEPS = ['Both score', 'Reveal', 'Claude fixes', 'Passes']
+
+/** A council's stage, where the board is not drawn (a row among several on the band): whose move, the scores once revealed. */
+function councilStage(list: Consult[], c: Consult, at: number): Stage {
+  const s = councilState(list, c.thread) as CouncilState
+  const base = consultStage(c, at, list)
+  const seats = { you: false }
+  const step = s.phase === 'passed' ? 3 : s.phase === 'fixing' || s.phase === 'limit' || s.phase === 'stalled' ? 2 : s.revealed ? 1 : 0
+  const strip = { labels: COUNCIL_STEPS, current: step, done: s.phase === 'passed', failed: s.phase === 'failed' }
+  if (WAITING.has(c.status) && (permitWaiting(c) || askWaiting(c))) return { ...base, ...seats, strip }
+  if (WAITING.has(c.status)) return { ...base, ...seats, headline: councilHeadline(s), sub: `Round ${s.n} of ${s.max} · bar ${s.target}`, strip }
+  if (c.status !== 'done') return { ...base, ...seats, strip }
+  const m = s.board[s.n - 1]
+  const low = m?.revealed ? Math.min(m.claude ?? 0, m.codex ?? 0) : undefined
+  return {
+    ...base,
+    ...seats,
+    severities: undefined,
+    consensus: undefined,
+    findings: undefined,
+    phase: 'done',
+    headline: councilHeadline(s),
+    sub: councilWords(s),
+    stamp: s.phase === 'passed' ? 'Passed' : m?.revealed ? `${m.claude} · ${m.codex}` : 'Sealed',
+    stampColour: s.phase === 'passed' ? GOOD : low !== undefined ? (low >= s.target - 1 ? WARN : BAD) : '#9aa0a8',
+    moment: s.phase === 'passed' ? 'spark' : undefined,
+    claudeMood: s.phase === 'seat' || s.phase === 'fixing' ? 'busy' : undefined,
+    strip,
+  }
+}
+
 /** The stage for a thread: joint reviews draw the whole debate, others their latest round. */
 function threadStage(list: Consult[], c: Consult, at: number): Stage {
   const rounds = threadOf(list, c.thread)
   const head = rounds[0]
-  const drawn = head?.kind === 'joint' ? jointStage(list, c.thread, at) : head?.loop ? loopStage(list, c, at) : consultStage(c, at, list)
+  const drawn = head?.council ? councilStage(list, c, at) : head?.kind === 'joint' ? jointStage(list, c.thread, at) : head?.loop ? loopStage(list, c, at) : consultStage(c, at, list)
   const stage: Stage = head ? { ...drawn, tag: tagOf(head), family: familyOf(head), ref: c.round > 1 ? `${c.thread} · ${c.round}` : c.thread } : drawn
   if ((stage.phase !== 'done' && stage.phase !== 'failed') || c.id !== rounds[rounds.length - 1]?.id) return stage
   const banter = banterFor(list, c)
@@ -7232,6 +7749,457 @@ function TaskWork($: Engine, el: Elements, list: Consult[], c: Consult, full: bo
         ))}
         {fixes.length > 4 && <Text dimColor>and {fixes.length - 4} more</Text>}
         {work.state === 'discarded' && <Text dimColor>Discarded</Text>}
+      </Box>
+    </Box>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// The council on screen: its board (the bench and the climb), its card in the
+// chat and its page in the pane. Codex's score is sealed on screen too until
+// Claude's seat is in, so the reveal is a moment for the person as well.
+
+/** What a council's paddles show for its current round. */
+function seatFaces(s: CouncilState): { claude: CouncilSeatView; codex: CouncilSeatView } {
+  const last = s.last
+  const codexIn = last.status === 'done' && typeof last.score === 'number'
+  if (s.revealed) return { claude: { face: 'shown', score: last.seat?.score }, codex: { face: 'shown', score: last.score } }
+  const claude: CouncilSeatView = s.seatIn ? { face: 'sealed' } : s.phase === 'scoring' || s.phase === 'seat' ? { face: 'working' } : { face: 'waiting' }
+  const codex: CouncilSeatView = WAITING.has(last.status) ? { face: 'working' } : codexIn ? { face: 'sealed' } : last.status === 'failed' || last.status === 'stopped' ? { face: 'none' } : { face: 'waiting' }
+  return { claude, codex }
+}
+
+/** The council's headline: what it comes to, in a line. */
+function councilHeadline(s: CouncilState) {
+  const m = s.board[s.n - 1]
+  const both = m?.revealed ? `Claude ${m.claude} · Codex ${m.codex}` : ''
+  switch (s.phase) {
+    case 'passed':
+      return `${both} — the council passes`
+    case 'ended':
+      return s.spec.ended?.by === 'user' ? 'You ended the council' : `Claude ended the council${s.spec.ended?.why ? `: ${s.spec.ended.why}` : ''}`
+    case 'failed':
+      return 'Codex did not score this round'
+    case 'limit':
+      return `${both} — out of rounds, below ${s.target}`
+    case 'stalled':
+      return `${both} — the scores have stalled`
+    case 'fixing':
+      return `${both} — below ${s.target}: Claude fixes`
+    case 'seat':
+      return "Codex has scored · Claude takes its seat"
+    default: {
+      if (s.seatIn) return "Claude's score is in · Codex is still scoring"
+      const step = [...s.last.steps].reverse().find(x => x.verb !== 'Note' && x.verb !== 'Think')
+      return step && RUNNING.has(s.last.status) ? `Both scoring · ${step.verb === 'Read' ? 'Codex reads' : 'Codex:'} ${fileName(step.text)}` : 'Both scoring, each on its own'
+    }
+  }
+}
+
+/** The facts under it: what the round brought, and what it cost. */
+function councilFacts(list: Consult[], s: CouncilState): (string | [string, string])[] {
+  const last = s.last
+  const found = allFindings(list, s.head.thread).map(x => x.f)
+  const open = found.filter(f => f.state === 'open').length
+  const fixed = found.filter(f => f.state === 'fixed').length
+  const declined = found.filter(f => f.state === 'dismissed').length
+  const parked = councilParked(s).length
+  const spent = costWords(threadCost(s.rounds))
+  if (WAITING.has(last.status)) {
+    return [
+      last.between ? [`Claude fixed ${last.between.fixed.length}${last.between.declined.length ? ` · declined ${last.between.declined.length}` : ''}`, CLAUDE] : '',
+      last.files.length ? `${plural(last.files.length, 'file')} read` : '',
+      `Codex ${codexName(last.model)}`,
+      s.seatIn ? ['Claude: sealed', CLAUDE] : ['Claude reviewing too', CLAUDE],
+    ]
+  }
+  if (s.phase === 'passed' || s.phase === 'ended') {
+    return [plural(s.board.filter(m => m.revealed).length, 'round'), fixed ? `${fixed} fixed` : '', declined ? `${declined} declined` : '', parked ? [`${parked} parked for later`, VIOLET] : '', span(Math.max(1, Math.round(((last.finishedAt ?? Date.now()) - s.head.createdAt) / 1000))), spent]
+  }
+  const gaps = s.revealed ? [last.seat?.gap, last.gap].filter(Boolean).length : 0
+  return [
+    open ? [`${plural(open, 'finding')} open`, WARN] : s.revealed ? 'no findings open' : '',
+    fixed ? `${fixed} fixed` : '',
+    parked ? [`${parked} parked`, VIOLET] : '',
+    gaps ? `${gaps === 2 ? 'both say' : 'one says'} what it needs` : '',
+    spent,
+  ]
+}
+
+/** Every idea a seat parked, once each, newest round first, with who parked it. */
+function councilParked(s: CouncilState) {
+  const seen = new Set<string>()
+  const out: { title: string; detail?: string; by: 'claude' | 'codex'; round: number }[] = []
+  s.rounds.forEach((r, i) => {
+    const revealed = s.board[i]?.revealed
+    for (const [by, items] of [['codex', revealed ? (r.parked ?? []) : []], ['claude', r.seat?.parked ?? []]] as const) {
+      for (const p of items) {
+        const key = p.title.toLowerCase().replace(/\W+/g, ' ').trim()
+        if (seen.has(key)) continue
+        seen.add(key)
+        out.push({ ...p, by, round: i + 1 })
+      }
+    }
+  })
+  return out.reverse()
+}
+
+/** The board as the art draws it. */
+function councilBoard(list: Consult[], s: CouncilState, at: number, controls = 0): CouncilBoard {
+  const faces = seatFaces(s)
+  const live = WAITING.has(s.last.status)
+  const seconds = runSeconds(s.last, at)
+  return {
+    title: s.head.title,
+    target: s.target,
+    max: s.max,
+    n: s.n,
+    marks: s.board.map(m => ({ round: m.round, claude: m.claude, codex: m.revealed ? m.codex : undefined, revealed: m.revealed })),
+    phase: s.phase,
+    claude: faces.claude,
+    codex: faces.codex,
+    headline: councilHeadline(s),
+    facts: councilFacts(list, s),
+    live,
+    time: live ? elapsed(s.last, at) : span(Math.max(1, Math.round(((s.last.finishedAt ?? at) - s.head.createdAt) / 1000))),
+    clock: seconds,
+    codexSprite: live ? (mascot?.think ?? mascot?.idle) : s.phase === 'passed' ? (mascot?.happy ?? mascot?.idle) : s.phase === 'failed' ? (mascot?.dizzy ?? mascot?.idle) : mascot?.idle,
+    controls,
+  }
+}
+
+/** Where the board's scene starts again: each new state is a moment of its own (the reveal plays once). */
+function councilScene(s: CouncilState, where: string) {
+  return `council:${where}:${s.head.thread}:${s.n}:${s.phase}:${s.seatIn}:${s.last.status}`
+}
+
+/** What the board says aloud, for someone who cannot see it. */
+function councilAlt(s: CouncilState) {
+  const rounds = s.board.filter(m => m.revealed).map(m => `round ${m.round}: Claude ${m.claude}, Codex ${m.codex}`)
+  return `Council, bar ${s.target} out of 10, round ${s.n} of ${s.max}. ${councilHeadline(s)}.${rounds.length ? ` Scores so far: ${rounds.join('; ')}.` : ''}`
+}
+
+/** The board in the chat or the pane; in the terminal, its gist in a line. */
+function CouncilBoardView(el: Elements, surface: string, list: Consult[], s: CouncilState, columns: number | undefined, where: string, at: number) {
+  const { Svg, Text } = el
+  if (surface === 'terminal' || !Svg) {
+    const m = s.board.filter(x => x.revealed)
+    return (
+      <Text color={s.phase === 'passed' ? GOOD : VIOLET} bold wrap="wrap">
+        {`⚖ Council · bar ${s.target} · round ${s.n} of ${s.max} — ${councilHeadline(s)}${m.length > 1 ? ` (${m.map(x => `${x.claude}/${x.codex}`).join(' → ')})` : ''}`}
+      </Text>
+    )
+  }
+  const room = widthFor(columns)
+  const key = councilScene(s, where)
+  const board = councilBoard(list, s, at)
+  const drawn = councilBoardSvg({ ...board, clock: board.clock === undefined ? undefined : board.clock - sceneOffset(key) }, room)
+  const svg = s.phase === 'passed' || s.phase === 'ended' ? settle(drawn) : drawn
+  const size = svgSize(svg) ?? { width: room, height: COUNCIL_HEIGHT }
+  return scenePicture(el, svg, key, councilAlt(s), Math.round(size.width))
+}
+
+/** A council's two latest scores as a small mark for list rows; a dot in the terminal. */
+function CouncilChip(el: Elements, surface: string, s: CouncilState, size = 18) {
+  const { Svg, Text } = el
+  const m = [...s.board].reverse().find(x => x.revealed)
+  if (surface === 'terminal' || !Svg) return <Text color={s.phase === 'passed' ? GOOD : VIOLET}>⚖</Text>
+  const svg = councilChipSvg({ claude: m?.claude, codex: m?.codex, target: s.target, passed: s.phase === 'passed' }, size)
+  return <Svg source={svg} alt={m ? `Claude ${m.claude}, Codex ${m.codex}, bar ${s.target}` : `Council, bar ${s.target}`} width={svgSize(svg)?.width ?? size * 2} height={size} />
+}
+
+/** The person's moves on a council: more rounds, end it, copy its scoreboard, run a failed round again. */
+function CouncilActions($: Engine, el: Elements, list: Consult[], s: CouncilState, where: string) {
+  const { Box, Button } = el
+  const thread = s.head.thread
+  const running = s.rounds.find(r => WAITING.has(r.status))
+  const over = s.phase === 'passed' || s.phase === 'ended'
+  return (
+    <Box key={`council-actions-${where}-${thread}`} flexDirection="row" gap={1} flexWrap="wrap" alignItems="center">
+      {running && <Button key={`council-stop-${where}-${thread}`} label="■ Stop Codex" onPress={() => void stopConsult($, running.id)} />}
+      {(s.phase === 'limit' || s.phase === 'stalled') && <Button key={`council-more-${where}-${thread}`} variant="primary" label="Sit 2 more rounds" onPress={() => void grantRounds($, thread, 2)} />}
+      {s.phase === 'failed' && s.last.sent && <Button key={`council-retry-${where}-${thread}`} variant="primary" label="↻ Run the round again" onPress={() => void askRetry($, s.last.id)} />}
+      {over && (
+        <Button
+          key={`council-copy-${where}-${thread}`}
+          label="Copy the scoreboard"
+          onPress={(press: UiPressArgument) => void copyText($, councilMarkdown(list, thread), press.surface, 'scoreboard')}
+        />
+      )}
+      {!over && <Button key={`council-end-${where}-${thread}`} plain dimColor label="End the council" onPress={() => void endFromPane($, thread)} />}
+    </Box>
+  )
+}
+
+/** The person grants more rounds: the limit goes up, and Claude carries on (past a stall too, as they said so). */
+async function grantRounds($: Engine, thread: string, more: number) {
+  const s = councilState(await all($), thread)
+  if (!s) return
+  await patch($, s.head.id, c => (c.council ? { ...c, council: { ...c.council, rounds: Math.max(c.council.rounds, s.n) + more } } : c))
+  await persist($)
+  await askClaude(
+    $,
+    `Sit ${more} more rounds of council ${thread} (I said so in the Claudex pane). Fix what is in scope from the last reveal, run the checks, then call ${COUNCIL} (action "next", council "${thread}", go_ahead: true).`,
+  )
+}
+
+async function endFromPane($: Engine, thread: string) {
+  await endCouncil($, thread, 'user', 'Ended from the Claudex pane')
+  await tellClaude($, `[claudex] The user ended council ${thread} from the Claudex pane. Start no more rounds of it; tell them in a line where it stood.`, thread)
+  $.ui.toast(`Council ${thread} ended`)
+}
+
+/** One round of a council in the pane: what Claude did before it, both seats' scores and findings, sealed until both are in. */
+function CouncilRound($: Engine, el: Elements, list: Consult[], s: CouncilState, c: Consult, i: number, v: View, at: number, columns: number | undefined) {
+  const { Box, Text, Button } = el
+  const mark = s.board[i] as CouncilMark
+  const live = WAITING.has(c.status)
+  const opened = v.open ?? []
+  const peek = opened.includes(`peek:${c.id}`)
+  const mine = (s.head.mine ?? []).filter(f => c.seat?.findings.includes(f.id))
+  const titleOf = (id: string) => allFindings(list, s.head.thread).find(x => x.f.id === id)?.f.title
+  const scoreText = (score: number | undefined) => (typeof score === 'number' ? `${score}/10` : '')
+  const findingsOf = (fs: Finding[]) =>
+    fs.map(f => FindingView($, el, f, { thread: s.head.thread, full: true, open: opened.includes(`${s.head.thread}:${f.id}`), mine: f.id.startsWith('C') }))
+  const codexShown = mark.revealed || peek
+  return (
+    <Box key={`council-round-${c.id}`} flexDirection="column" marginTop={1}>
+      <Text dimColor wrap="truncate-end">
+        {rule(columns)}
+      </Text>
+      <Box flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">
+        <Text bold>Round {i + 1}</Text>
+        {mark.revealed ? (
+          <Text>
+            <Text color={CLAUDE} bold>
+              Claude {mark.claude}
+            </Text>
+            <Text dimColor> · </Text>
+            <Text color={CODEX} bold>
+              Codex {mark.codex}
+            </Text>
+          </Text>
+        ) : (
+          <Text dimColor>{live ? 'scoring…' : c.status === 'done' ? 'sealed until both are in' : STATUS_TEXT[c.status]}</Text>
+        )}
+        <Text dimColor>· {live ? elapsed(c, at) : ago(c.createdAt)}</Text>
+      </Box>
+      {c.between && (
+        <Box flexDirection="column" paddingLeft={1}>
+          {Said(el, CLAUDE, `council-between-${c.id}`, [
+            Speaker(el, 'claude', 'codex', 'between rounds'),
+            c.between.fixed.length > 0 && <Text wrap="wrap">Fixed: {c.between.fixed.map(id => `${id}${titleOf(id) ? ` (${cut(titleOf(id) as string, 40)})` : ''}`).join(', ')}</Text>,
+            c.between.declined.length > 0 && <Text wrap="wrap">Declined: {c.between.declined.map(d => `${d.id} — ${cut(d.reason, 90)}`).join('; ')}</Text>,
+            c.between.changes && <Text dimColor wrap="wrap">{cut(c.between.changes, 400)}</Text>,
+            c.between.checks && <Text dimColor wrap="wrap">Checks: {cut(c.between.checks, 240)}</Text>,
+          ])}
+        </Box>
+      )}
+      {live && (
+        <Box flexDirection="column" paddingLeft={1}>
+          {PlanList(el, c)}
+          {RUNNING.has(c.status) && Activity(el, c, 8, at)}
+        </Box>
+      )}
+      {c.seat && (
+        <Box flexDirection="column" paddingLeft={1} marginTop={1}>
+          {Said(el, CLAUDE, `council-seat-${c.id}`, [
+            Speaker(el, 'claude', 'user', `its seat · ${mark.revealed ? scoreText(c.seat.score) : 'sealed until Codex is in'}`),
+            mark.revealed && <Text wrap="wrap">{c.seat.summary}</Text>,
+            mark.revealed && c.seat.gap && <Text dimColor wrap="wrap">To reach {s.target}: {c.seat.gap}</Text>,
+          ])}
+          {mark.revealed && findingsOf(mine)}
+        </Box>
+      )}
+      {c.status === 'done' && (
+        <Box flexDirection="column" paddingLeft={1} marginTop={1}>
+          {codexShown ? (
+            Said(el, CODEX, `council-codex-${c.id}`, [
+              Speaker(el, 'codex', 'user', `${scoreText(c.score)}${!mark.revealed ? ' · peeked (Claude has not seen it)' : ''}`),
+              c.summary && <Text wrap="wrap">{c.summary}</Text>,
+              c.gap && <Text dimColor wrap="wrap">To reach {s.target}: {c.gap}</Text>,
+              Responses(el, c, true),
+            ])
+          ) : (
+            <Box flexDirection="row" gap={1} alignItems="center">
+              <Text color={CODEX}>⬡ Codex has scored · sealed until Claude's seat is in</Text>
+              <Button key={`council-peek-${c.id}`} plain dimColor label="Peek" onPress={() => void toggleIn($, 'open', `peek:${c.id}`)} />
+            </Box>
+          )}
+          {codexShown && findingsOf(c.findings)}
+        </Box>
+      )}
+      {(c.status === 'failed' || c.status === 'stopped') && (
+        <Box paddingLeft={1}>
+          <Text color={c.status === 'stopped' ? undefined : BAD} dimColor={c.status === 'stopped'} wrap="wrap">
+            {STATUS_TEXT[c.status]}
+            {c.error && c.error !== 'Stopped' ? `: ${c.error}` : ''}
+          </Text>
+        </Box>
+      )}
+    </Box>
+  )
+}
+
+/** A council's page in the pane: the board, the brief and the bar, the person's moves, each round (newest first) and the parked ideas. */
+function CouncilDetail($: Engine, el: Elements, surface: string, columns: number | undefined, list: Consult[], s: CouncilState, v: View, at: number) {
+  const { Box, Text, Button, Markdown } = el
+  const thread = s.head.thread
+  const parked = councilParked(s)
+  const briefKey = `council-brief:${thread}`
+  const showBrief = v.showBrief === briefKey
+  return (
+    <Box flexDirection="column" gap={1}>
+      <Box flexDirection="row" justifyContent="space-between" alignItems="center">
+        <Button key="back" plain dimColor autoFocus label="‹ Conversations" onPress={() => void setView($, { thread: '', tell: '' })} />
+        <Text dimColor>
+          {thread} · {codexName(s.last.model)} · {s.head.effort}
+        </Text>
+      </Box>
+      <Text bold wrap="wrap">
+        {s.head.title}
+      </Text>
+      {MoveTag(el, moveOf(list, thread), Math.max(20, (columns ?? 60) - 14))}
+      {CouncilBoardView(el, surface, list, s, columns, 'pane', at)}
+      <Box flexDirection="row" gap={1} flexWrap="wrap" alignItems="center">
+        <Text color={YOU} bold>
+          Bar {s.target}/10
+        </Text>
+        <Text dimColor>
+          · up to {plural(s.max, 'round')}
+          {s.head.scope ? ` · ${s.head.scope}` : ''}
+          {s.head.lens ? ` · ${LENSES[s.head.lens].label} lens` : ''}
+        </Text>
+        <Button key={`council-brief-${thread}`} plain dimColor label={showBrief ? '▾ Hide the brief' : '▸ The brief they score against'} onPress={() => void update($, view, x => ({ ...x, showBrief: x.showBrief === briefKey ? '' : briefKey }))} />
+      </Box>
+      {showBrief && <Box paddingLeft={2}>{Markdown ? <Markdown text={cut(s.spec.brief, 6000)} /> : <Text wrap="wrap">{s.spec.brief}</Text>}</Box>}
+      {CouncilActions($, el, list, s, 'pane')}
+      {s.spec.ended && (
+        <Text dimColor wrap="wrap">
+          Ended by {s.spec.ended.by === 'user' ? 'you' : 'Claude'} {ago(s.spec.ended.at)}: {s.spec.ended.why}
+        </Text>
+      )}
+      {parked.length > 0 && (
+        <Box flexDirection="column" marginTop={1}>
+          <Box flexDirection="row" gap={1} alignItems="center">
+            {Label(el, `Parked · ${parked.length}`)}
+            <Text dimColor>beyond the brief: not scored, not for now</Text>
+          </Box>
+          {parked.map((p, i) => (
+            <Box key={`council-parked-${thread}-${i}`} flexDirection="row" gap={1} paddingLeft={1}>
+              <Text color={p.by === 'claude' ? CLAUDE : CODEX}>◇</Text>
+              <Box flexDirection="column" flexShrink={1}>
+                <Text wrap="wrap">{p.title}</Text>
+                {p.detail && (
+                  <Text dimColor wrap="wrap">
+                    {cut(p.detail, 220)}
+                  </Text>
+                )}
+              </Box>
+            </Box>
+          ))}
+        </Box>
+      )}
+      {[...s.rounds].reverse().map(c => CouncilRound($, el, list, s, c, s.rounds.indexOf(c), v, at, columns))}
+    </Box>
+  )
+}
+
+/** A council call's card in the chat: the board for a round it started, a line for a seat handed in or the end. */
+export async function councilCard($: Engine, e: any, next: (e: any) => Promise<any>) {
+  const el = $.ui.resolve(e) as unknown as Elements
+  const { Box, Text, Button } = el
+  const list = await read($, consults)
+  const input = (e.props.input ?? {}) as { action?: string; council?: string; score?: number; reason?: string }
+  const action = input.action ?? 'start'
+  const at = Date.now()
+  if (action === 'score' || action === 'end') {
+    const thread = String(input.council ?? '').toUpperCase().replace(/-\d+$/, '')
+    const s = councilState(list, thread)
+    if (!s) return next(e)
+    if (action === 'end') {
+      return (
+        <Box flexDirection="row" gap={1} flexWrap="wrap">
+          <Text bold color={VIOLET}>
+            ⚖ Council {thread}
+          </Text>
+          <Text dimColor>ended{input.reason ? `: ${cut(input.reason, 120)}` : ''}</Text>
+        </Box>
+      )
+    }
+    const round = s.rounds.find(r => r.seat?.toolUseId && r.seat.toolUseId === e.props.tool_use_id) ?? s.last
+    const i = s.rounds.indexOf(round)
+    const revealed = s.board[i]?.revealed
+    return (
+      <Box flexDirection="row" gap={1} flexWrap="wrap" alignItems="center">
+        {Speaker(el, 'claude', 'codex', `its seat · council ${thread}, round ${i + 1}`)}
+        <Text bold color={CLAUDE}>
+          {Number.isFinite(Number(input.score)) ? `${clampScore(input.score)}/10` : ''}
+        </Text>
+        <Text dimColor>{revealed ? `· revealed: Codex ${s.board[i]?.codex}` : '· sealed until Codex is in'}</Text>
+      </Box>
+    )
+  }
+  const c = list.find(x => x.toolUseId === e.props.tool_use_id)
+  if (!c) {
+    if (!e.props.isRunning) return next(e)
+    return (
+      <Box flexDirection="row" gap={1}>
+        <Text bold color={VIOLET}>
+          ⚖ Council
+        </Text>
+        <Text dimColor>Calling the council…</Text>
+      </Box>
+    )
+  }
+  const s = councilState(list, c.thread)
+  if (!s) return next(e)
+  const v = await read($, view)
+  const latestCard = !s.rounds.some(r => r.round > c.round && r.toolUseId)
+  const i = s.rounds.indexOf(c)
+  const cardKey = `card:${c.id}`
+  // An earlier round's card folds to a line once a later one took over: the latest carries the board.
+  if (!latestCard && !(v.expanded ?? []).includes(cardKey)) {
+    const m = s.board[i]
+    return (
+      <Box flexDirection="row" gap={1} alignItems="center">
+        {CouncilChip(el, e.surface, { ...s, board: s.board.slice(0, i + 1) }, 16)}
+        <Text bold color={VIOLET}>
+          Council
+        </Text>
+        <Box flexShrink={1} flexGrow={1}>
+          <Text wrap="truncate-end">{cut(c.title, 50)}</Text>
+        </Box>
+        <Text dimColor>
+          round {i + 1}
+          {m?.revealed ? ` · Claude ${m.claude} · Codex ${m.codex}` : ''}
+        </Text>
+        <Button key={`expand-${c.id}`} plain dimColor label="Show" onPress={() => void toggleIn($, 'expanded', cardKey)} />
+      </Box>
+    )
+  }
+  return (
+    <Box flexDirection="column">
+      {CouncilBoardView(el, e.surface, list, s, e.viewport?.columns, `card:${c.id}`, at)}
+      <Box flexDirection="column" paddingLeft={1} marginTop={1}>
+        {Speaker(el, c.from === 'claude' ? 'claude' : 'user', 'codex', `${i === 0 ? `Council · bar ${s.target}/10 · up to ${plural(s.spec.rounds, 'round')}` : `Council round ${i + 1}`} · ${c.thread}`)}
+        <Box paddingLeft={2}>
+          <Text wrap="wrap">{i === 0 ? cut(c.request, 360) : c.between ? `Fixed ${c.between.fixed.length}${c.between.declined.length ? `, declined ${c.between.declined.length}` : ''}; scoring again as it stands.` : c.request}</Text>
+        </Box>
+        {i === 0 && c.scope && (
+          <Text dimColor>
+            {c.scope}
+            {c.diffstat ? ` · ${c.diffstat}` : ''}
+          </Text>
+        )}
+      </Box>
+      <Box paddingLeft={1} marginTop={1}>
+        {MoveTag(el, moveOf(list, c.thread), 60)}
+      </Box>
+      <Box flexDirection="row" gap={1} paddingLeft={1} marginTop={1} flexWrap="wrap" alignItems="center">
+        {CouncilActions($, el, list, s, `card-${c.id}`)}
+        <Button key={`open-${c.id}`} plain label="Open in the pane ›" onPress={() => void openPane($, { tab: 'talk', thread: c.thread, showActivity: '', showBrief: '' })} />
+        {!latestCard && <Button key={`collapse-${c.id}`} plain dimColor label="Fold" onPress={() => void toggleIn($, 'expanded', cardKey)} />}
       </Box>
     </Box>
   )
@@ -8347,6 +9315,21 @@ function bandVerdict(list: Consult[], c: Consult): BandResult {
   if (c.status === 'failed') {
     return { tag: tagOf(head), title: head.title, stamp: 'Could not finish', kind: c.kind === 'task' ? 'task_failed' : 'failed', colour: BAD, facts: [took], summary: c.error }
   }
+  const council = councilState(list, c.thread)
+  if (council) {
+    const m = council.board[council.n - 1]
+    const passed = council.phase === 'passed'
+    return {
+      tag: 'Council',
+      title: head.title,
+      stamp: passed ? 'Passed' : m?.revealed ? `Claude ${m.claude} · Codex ${m.codex}` : council.phase === 'ended' ? 'Ended' : 'Sealed',
+      kind: passed ? 'approve' : m?.revealed ? 'changes_needed' : 'answer',
+      colour: passed ? GOOD : m?.revealed ? WARN : VIOLET,
+      moment: passed ? 'spark' : undefined,
+      facts: [`bar ${council.target}`, `round ${council.n} of ${council.max}`, took, spent].filter(Boolean),
+      summary: councilHeadline(council),
+    }
+  }
   if (head.kind === 'joint') {
     const t = jointTally(list, c.thread)
     const facts = [`both found ${t.both.length}`, t.onlyClaude.length ? `only Claude ${t.onlyClaude.length}` : '', t.onlyCodex.length ? `only Codex ${t.onlyCodex.length}` : '', took, spent].filter(Boolean)
@@ -8459,7 +9442,9 @@ export async function band($: Engine, e: any, next: (e: any) => Promise<any>) {
   const waitingLoop = finished && loopNow?.turn === 'claude' && loopNow.last.id === finished.id ? finished : undefined
   // Any other task's finished version is Claude's to check and apply: that shows until Claude settles it.
   const waitingTask = finished && !loopNow && finished.kind === 'task' && finished.task?.state === 'ready' && latestTask(list, finished.thread)?.id === finished.id ? finished : undefined
-  const fresh = finished && !waitingJoint && !waitingLoop && !waitingTask ? finished : undefined
+  // A council's round landed: its board shows until the council moves on (or the person dismisses it).
+  const finishedCouncil = finished ? councilState(list, finished.thread) : undefined
+  const fresh = finished && !waitingJoint && !waitingLoop && !waitingTask && !finishedCouncil ? finished : undefined
   // What waits on the person, across this project's threads.
   // Counted as the pane's list shows them (this chat's, unless all chats are picked), so the count and where it leads agree.
   const hereOnly = Boolean(thisChat()) && vv.scope !== 'all'
@@ -8624,7 +9609,13 @@ export async function band($: Engine, e: any, next: (e: any) => Promise<any>) {
         ]),
       )
     }
-    if (jobs === 1 && loose[0]) {
+    const councilLive = jobs === 1 && loose[0]?.kind === 'council' ? councilState(list, loose[0].thread) : undefined
+    if (councilLive && loose[0]) {
+      // One council round: its board, live.
+      const c = loose[0]
+      const board = councilBoard(list, councilLive, at, BAND_CONTROLS)
+      rows.push(strip(`band-${c.id}`, councilAlt(councilLive), since => councilBoardSvg({ ...board, clock: board.clock === undefined ? undefined : board.clock - since }, W), controls(c), permitAnswers(c), true))
+    } else if (jobs === 1 && loose[0]) {
       // One job: the stage in small.
       const c = loose[0]
       const claudeBeads = claudeBeadsNow(at)
@@ -8701,6 +9692,31 @@ export async function band($: Engine, e: any, next: (e: any) => Promise<any>) {
     }
     // With nothing running, the newest result has the main strip; the rest go on the line under it.
     const quiet = !rows.length
+    if (!rows.length && finished && finishedCouncil) {
+      const s = finishedCouncil
+      const more = s.phase === 'limit' || s.phase === 'stalled'
+      const labels = [...(more ? ['2 more rounds'] : []), 'Details', '✕']
+      const room = Math.max(BAND_CONTROLS, Math.round(28 + labels.reduce((w, l) => w + l.length * 7.6 + 34, 0)))
+      rows.push(
+        strip(`band-council-${finished.id}`, councilAlt(s), () => councilBoardSvg(councilBoard(list, s, at, room), W), [
+          ...(more
+            ? [
+                <Button
+                  key={`band-council-more-${finished.id}`}
+                  variant="primary"
+                  label="2 more rounds"
+                  onPress={() => {
+                    markSeen(finished.id)
+                    void grantRounds($, s.head.thread, 2)
+                  }}
+                />,
+              ]
+            : []),
+          <Button key={`band-watch-${finished.id}`} label="Details" onPress={() => openNews(finished)} />,
+          <Button key={`band-hide-${finished.id}`} label="✕" onPress={() => markSeen(finished.id)} />,
+        ]),
+      )
+    }
     if (!rows.length && waitingJoint) {
       const hero = bandWaiting(list, waitingJoint)
       rows.push(
@@ -8754,7 +9770,10 @@ export async function band($: Engine, e: any, next: (e: any) => Promise<any>) {
     }
     rows.push(newsLine(quiet && finished ? news.slice(1) : news, quiet && finished ? `+${news.length - 1} more:` : `${plural(news.length, 'new result')}:`))
     if (!rows.filter(Boolean).length) {
-      const lastWords = lastFinished
+      const lastCouncil = lastFinished ? councilState(list, lastFinished.thread) : undefined
+      const lastWords = lastCouncil
+        ? `Council · ${councilWords(lastCouncil)} · ${ago(lastFinished?.finishedAt as number)}`
+        : lastFinished
         ? `${KIND_LABEL[(threadOf(list, lastFinished.thread)[0] ?? lastFinished).kind]} · ${
             lastFinished.kind === 'task'
               ? lastFinished.task
@@ -8868,6 +9887,34 @@ export async function band($: Engine, e: any, next: (e: any) => Promise<any>) {
           </Box>
           <Button key="band-watch-images" plain dimColor label="Watch" onPress={() => void openPane($, { tab: 'images', image: pictures.length === 1 ? first.id : '' })} />
           <Button key="band-stop-images" plain dimColor label="Stop" onPress={() => void Promise.all(pictures.map(it => cancelImage($, it.id, cancelRun)))} />
+        </Box>,
+      )
+    }
+    if (!talks.length && !pictures.length && finished && finishedCouncil) {
+      const s = finishedCouncil
+      rows.push(
+        <Box key={`band-council-${finished.id}`} flexDirection="row" gap={1} alignItems="center" paddingLeft={2}>
+          <Text color={s.phase === 'passed' ? GOOD : VIOLET} bold>
+            ⚖ Council
+          </Text>
+          <Box flexShrink={1} flexGrow={1}>
+            <Text wrap="truncate-end">
+              {councilWords(s)} · {cut(s.head.title, 36)}
+            </Text>
+          </Box>
+          {(s.phase === 'limit' || s.phase === 'stalled') && (
+            <Button
+              key={`band-council-more-${finished.id}`}
+              plain
+              label="2 more rounds"
+              onPress={() => {
+                markSeen(finished.id)
+                void grantRounds($, s.head.thread, 2)
+              }}
+            />
+          )}
+          <Button key={`band-watch-${finished.id}`} plain dimColor label="Watch" onPress={() => openNews(finished)} />
+          <Button key={`band-hide-${finished.id}`} plain dimColor label="✕" onPress={() => markSeen(finished.id)} />
         </Box>,
       )
     }
@@ -9534,11 +10581,13 @@ function ThreadRows($: Engine, el: Elements, surface: string, list: Consult[], t
     const move = moveOf(list, t)
     const elsewhere = head.chat && head.chat !== thisChat() ? chatBook[head.chat] : undefined
     const family = familyOf(head)
+    const council = councilState(list, t)
     const facts = [
+      council ? councilWords(council) : '',
       work?.files?.length ? `+${work.added ?? 0} −${work.removed ?? 0}` : '',
       // The move's words often say the open findings already.
       open > high && !/finding/.test(move.words) ? `${open - high} open` : !open && findings.length ? plural(findings.length, 'finding') : '',
-      thread.length > 1 ? `${thread.length} rounds` : '',
+      thread.length > 1 && !council ? `${thread.length} rounds` : '',
       inThisProject(head) ? '' : `in ${fileName(projectOf(head) as string)}`,
       head.job ? `part of “${cut(head.job.title, 24)}”` : '',
       everyChat && elsewhere ? `in ${chatName(elsewhere, head.chat)}` : '',
@@ -9556,7 +10605,7 @@ function ThreadRows($: Engine, el: Elements, surface: string, list: Consult[], t
     ]
     return (
       <Box key={`row-${t}`} flexDirection="row" gap={1}>
-        {Chip(el, surface, chipKind(current))}
+        {council ? CouncilChip(el, surface, council) : Chip(el, surface, chipKind(current))}
         <Box flexDirection="column" flexShrink={1} flexGrow={1}>
           {renaming ? (
             <Box flexDirection="row" gap={1} alignItems="center">
@@ -9632,6 +10681,8 @@ function needsOf(list: Consult[], t: string) {
       !running &&
       ((work !== undefined && (work.state === 'ready' || work.state === 'conflict')) ||
         loopState(list, t)?.turn === 'claude' ||
+        councilState(list, t)?.phase === 'seat' ||
+        councilState(list, t)?.phase === 'fixing' ||
         (head.kind === 'joint' && head.status === 'done' && !head.mine)),
     failed: last.status === 'failed' || rounds.some(c => c.stalled),
     findings: allFindings(list, t).some(x => x.f.state === 'open'),
@@ -9928,6 +10979,7 @@ type StartChoice =
   | 'tweak'
   | 'cutout'
   | 'another'
+  | 'council'
 
 /** The starts that carry on from something already there: they come from its Buttons, not the New menu. */
 const AGAIN = new Set<StartChoice>(['recheck', 'reply', 'retry', 'paint', 'repaint', 'tweak', 'cutout', 'another'])
@@ -10060,6 +11112,13 @@ const STARTS: Record<StartChoice, { title: string; says: string; button: string;
     button: 'Cut it out',
     kind: 'image',
   },
+  council: {
+    title: 'Convene a council',
+    says: 'Claude and Codex each score the work out of 10, on their own and sealed until both are in. Below your bar, Claude fixes what is in scope, runs the checks, and they score it again, round after round, until both reach it.',
+    button: 'Send to Claude',
+    input: 'What it set out to do (optional: Claude takes it from your chat)…',
+    kind: 'council',
+  },
   claudeBuilds: {
     title: 'Claude builds, Codex reviews',
     says: "Claude builds it in your files. Codex reviews Claude's changes, Claude fixes what they agree on, and Codex checks again until it approves.",
@@ -10073,6 +11132,7 @@ const BUILD_STARTS = { label: 'Build something', choices: ['together', 'pair', '
 
 const TALK_STARTS: { label: string; choices: StartChoice[] }[] = [
   { label: 'Review code changes', choices: ['changes', 'session', 'branch'] },
+  { label: 'Score it until it is ready', choices: ['council'] },
   BUILD_STARTS,
   { label: 'Review a page', choices: ['visual'] },
   { label: 'Review a plan', choices: ['plan', 'brief'] },
@@ -10101,6 +11161,31 @@ type Pending = {
   warnings: string[]
   empty?: string
   fixes?: { thread: string; finding: string }[]
+  /** A council's bar and the most rounds it sits. */
+  target?: number
+  rounds?: number
+}
+
+/** What a council started from the pane looks at, in Claude's words and in the menu's. */
+const COUNCIL_SCOPES: Record<string, { label: string; words: string }> = {
+  uncommitted: { label: 'Uncommitted changes', words: 'my uncommitted changes' },
+  session: { label: 'What Claude changed in this chat', words: 'what you changed in this chat' },
+  branch: { label: 'This branch against main', words: 'this branch against main' },
+}
+
+/** The council's scope, picked in its confirm step: what it covers now, worked out again. */
+async function councilScope($: Engine, pending: Pending, scopeName: string): Promise<Pending> {
+  const files = scopeName === 'session' ? await sessionFiles($) : []
+  const scope = await describeScope($, scopeName, 'main', 'HEAD', files)
+  const empty =
+    scopeName === 'session' && !files.length
+      ? 'Claude has not changed any files in this chat yet.'
+      : scopeName === 'uncommitted' && /^no changes/.test(scope?.diffstat ?? '')
+        ? 'There are no uncommitted changes for the council to look at.'
+        : scopeName === 'branch' && !scope?.diffstat
+          ? 'This branch has no changes against main.'
+          : undefined
+  return { ...pending, scope: scopeName, what: scope ? `${scope.label}${scope.diffstat ? ` · ${scope.diffstat}` : ''}` : undefined, empty }
 }
 
 /** Works out what a start would cover, so the confirm step can say it plainly. */
@@ -10121,6 +11206,15 @@ async function chooseStart($: Engine, choice: StartChoice) {
       pending.warnings.push(`This is a big change (${scope?.diffstat}): the review takes long and uses a lot of quota. Reviewing Claude's changes or a commit is lighter.`)
     }
   }
+  if (choice === 'council') {
+    // What there is to judge: the uncommitted changes, else what Claude changed here.
+    let next = await councilScope($, { ...pending, target: COUNCIL_TARGET, rounds: COUNCIL_ROUNDS }, 'uncommitted')
+    if (next.empty) {
+      const here = await councilScope($, next, 'session')
+      if (!here.empty) next = here
+    }
+    Object.assign(pending, next)
+  }
   if (choice === 'plan') {
     const found = await currentPlan($)
     if (!found.text.trim()) pending.empty = 'No plan found yet: write one first, or use "Review a plan or brief".'
@@ -10134,7 +11228,7 @@ async function chooseStart($: Engine, choice: StartChoice) {
 async function confirmStart($: Engine, pending: Pending, typed: string) {
   const text = typed.trim()
   const spec = STARTS[pending.choice]
-  if (spec.input && !text) {
+  if (spec.input && !text && pending.choice !== 'council') {
     $.ui.toast('Type it in the box first')
     return
   }
@@ -10166,7 +11260,15 @@ async function confirmStart($: Engine, pending: Pending, typed: string) {
   else if (pending.choice === 'tweak' && pending.image && pending.text) await tweak($, pending.image, pending.text)
   else if (pending.choice === 'cutout' && pending.image) await cutOut($, pending.image)
   else if (pending.choice === 'visual') await userVisual($, text)
-  else if (pending.choice === 'joint') {
+  else if (pending.choice === 'council') {
+    const target = pending.target ?? COUNCIL_TARGET
+    const rounds = pending.rounds ?? COUNCIL_ROUNDS
+    const scope = pending.scope ?? 'uncommitted'
+    await askClaude(
+      $,
+      `Convene a council on ${COUNCIL_SCOPES[scope]?.words ?? 'the changes'} (I started it from the Claudex pane): you and Codex each score it out of 10 until both reach ${target}, up to ${plural(rounds, 'round')}.${text ? `\n\nWhat it set out to do: ${text}` : ' Take what it set out to do from our conversation.'}\n\nFirst fix anything you already know is wrong and run the checks. Then start it with ${COUNCIL} (action "start", target: ${target}, rounds: ${rounds}, scope: "${scope}").`,
+    )
+  } else if (pending.choice === 'joint') {
     await askClaude($, `Let's look into this together with Codex (a joint review): you and Codex each review it on your own, then compare notes and debate to one solution.\n\n${text}`)
   }
 }
@@ -10174,7 +11276,7 @@ async function confirmStart($: Engine, pending: Pending, typed: string) {
 type MenuFact = { text: string; tone?: 'empty' | 'warn' }
 
 /** The starts whose coverage the menu works out before anything is picked. */
-const FACT_CHOICES = new Set<StartChoice>(['changes', 'session', 'branch', 'plan'])
+const FACT_CHOICES = new Set<StartChoice>(['changes', 'session', 'branch', 'plan', 'council'])
 
 // Every Codex run the pane or a card starts goes through the confirm step: these open it for the
 // starts that carry on from something (a reply, a re-check, a retry, a picture).
@@ -10311,6 +11413,7 @@ async function openStartMenu($: Engine) {
       : { text: 'no changes against main', tone: 'empty' }
     const plan = await currentPlan($)
     facts.plan = plan.text.trim() ? { text: plan.file ? fileName(plan.file) : "Claude's last long reply" } : { text: 'no plan yet', tone: 'empty' }
+    facts.council = facts.changes?.tone === 'empty' ? (facts.session?.tone === 'empty' ? { text: 'nothing to judge yet', tone: 'empty' } : facts.session) : facts.changes
   } catch {}
   if ((await read($, view)).start === 'menu') await setView($, { menu: JSON.stringify(facts) })
 }
@@ -10415,7 +11518,7 @@ function StartPanel($: Engine, el: Elements, list: Consult[], pending: Pending, 
         </Box>
       )}
       <Box flexDirection="column">
-        {pending.what && row('Looks at', pending.what)}
+        {pending.what && pending.choice !== 'council' && row('Looks at', pending.what)}
         {pending.items?.length &&
           row(
             pending.itemsLabel ?? (pending.choice === 'fix' ? 'Fixes' : 'Covers'),
@@ -10457,6 +11560,50 @@ function StartPanel($: Engine, el: Elements, list: Consult[], pending: Pending, 
               onSelect={(value: string) => void update($, prefs, x => ({ ...x, lens: value as Lens })).then(() => persistPrefs($))}
             />,
           )}
+        {pending.choice === 'council' &&
+          Select &&
+          row(
+            'Looks at',
+            <Box flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">
+              <Select
+                key="confirm-council-scope"
+                value={pending.scope ?? 'uncommitted'}
+                options={Object.entries(COUNCIL_SCOPES).map(([value, x]) => ({ value, label: x.label }))}
+                onSelect={(value: string) => void councilScope($, pending, value).then(next => setView($, { start: JSON.stringify(next) }))}
+              />
+              {pending.what && <Text dimColor>{pending.what.split(' · ').slice(1).join(' · ')}</Text>}
+            </Box>,
+          )}
+        {pending.choice === 'council' &&
+          Select &&
+          row(
+            'Bar',
+            <Box flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">
+              <Select
+                key="confirm-council-bar"
+                value={String(pending.target ?? COUNCIL_TARGET)}
+                options={[10, 9, 8, 7, 6].map(n => ({ value: String(n), label: `${n} / 10` }))}
+                onSelect={(value: string) => void setView($, { start: JSON.stringify({ ...pending, target: Number(value) }) })}
+              />
+              <Text dimColor>both seats must reach it</Text>
+            </Box>,
+          )}
+        {pending.choice === 'council' &&
+          Select &&
+          row(
+            'Rounds',
+            <Box flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">
+              <Select
+                key="confirm-council-rounds"
+                value={String(pending.rounds ?? COUNCIL_ROUNDS)}
+                options={[2, 3, 4, 5, 6, 8].map(n => ({ value: String(n), label: `up to ${n}` }))}
+                onSelect={(value: string) => void setView($, { start: JSON.stringify({ ...pending, rounds: Number(value) }) })}
+              />
+              <Text dimColor>then Claude asks you before more</Text>
+            </Box>,
+          )}
+        {pending.choice === 'council' && row('Between', 'Claude fixes what is in scope and runs the checks. Ideas beyond the brief are parked, not taken on.')}
+        {pending.choice === 'council' && row('Ends', 'when both reach the bar. Out of rounds, or if the scores stall, Claude asks you first.')}
         {looping &&
           row(
             'Ends',
@@ -10475,6 +11622,8 @@ function StartPanel($: Engine, el: Elements, list: Consult[], pending: Pending, 
               ? 'edit its own copies of the repo; Claude edits your files and applies what they agree on'
               : codexBuilds
               ? 'edit its own copy of the repo; Claude reads it until it applies'
+              : pending.choice === 'council'
+                ? 'read only; Claude fixes your files between rounds'
               : spec.kind === 'image'
                 ? 'paint only: your code is not touched'
                 : runKind === 'task'
@@ -10483,8 +11632,8 @@ function StartPanel($: Engine, el: Elements, list: Consult[], pending: Pending, 
                   ? 'read only, as can Claude'
                   : 'read only',
         )}
-        {row('Takes', looping ? (codexBuilds ? 'a few minutes a round' : pending.choice === 'together' ? 'as long as the job needs' : "Claude's build, then 2–6 minutes a review") : spec.kind === 'image' ? 'about a minute' : usual ? `usually about ${usual}` : runKind === 'task' ? 'a few minutes' : '2–6 minutes')}
-        {row('Uses', `your Codex quota${looping ? ', one run per round' : ''}${top ? ` · ${windowName(top.minutes)} ${Math.round(top.percent)}% used so far` : ''}`)}
+        {row('Takes', pending.choice === 'council' ? "2–6 minutes a round, plus Claude's fixes between them" : looping ? (codexBuilds ? 'a few minutes a round' : pending.choice === 'together' ? 'as long as the job needs' : "Claude's build, then 2–6 minutes a review") : spec.kind === 'image' ? 'about a minute' : usual ? `usually about ${usual}` : runKind === 'task' ? 'a few minutes' : '2–6 minutes')}
+        {row('Uses', `your Codex quota${looping || pending.choice === 'council' ? ', one run per round' : ''}${top ? ` · ${windowName(top.minutes)} ${Math.round(top.percent)}% used so far` : ''}`)}
       </Box>
       {pending.warnings.map((w, i) => (
         <Text key={`confirm-warn-${i}`} color={WARN} wrap="wrap">
@@ -10632,6 +11781,8 @@ export function threadMarkdown(list: Consult[], thread: string) {
 
 function ConversationDetail($: Engine, el: Elements, surface: string, columns: number | undefined, list: Consult[], thread: string, v: any, at: number, shots?: unknown) {
   const { Box, Text, Button, Markdown, Input, Code } = el
+  const council = councilState(list, thread)
+  if (council) return CouncilDetail($, el, surface, columns, list, council, v, at)
   const rounds = threadOf(list, thread)
   const head = rounds[0] as Consult
   const last = rounds[rounds.length - 1] as Consult
@@ -11456,7 +12607,7 @@ async function guard($: Engine, goAhead: boolean) {
 }
 
 /** The keys of the pane's Inputs and Selects. */
-const FIELD_KEYS = /^(new-picture|edit-input|tweak-input|ask-input|ask-[A-Z0-9]{4}$|confirm-input-|confirm-lens|pref-|pick-|rename-[A-Z0-9]{4}$|revise-[A-Z0-9]{4}(-\d+)?$|tell-[A-Z0-9]{4}(-\d+)?(-[\w.-]+)?$)/
+const FIELD_KEYS = /^(new-picture|edit-input|tweak-input|ask-input|ask-[A-Z0-9]{4}$|confirm-input-|confirm-lens|confirm-council-|pref-|pick-|rename-[A-Z0-9]{4}$|revise-[A-Z0-9]{4}(-\d+)?$|tell-[A-Z0-9]{4}(-\d+)?(-[\w.-]+)?$)/
 
 function hidden($: Engine, e: any) {
   const { Box } = $.ui.resolve(e) as unknown as { Box: (p: any) => any }
@@ -11602,6 +12753,7 @@ export const register: Register = (on, options) => {
         '- why something fails, find the bug: kind "debug", with the output in evidence.\n' +
         '- a question, or anything that ends in an answer or a report: kind "question".\n' +
         '- the two of you look into it, each on your own, then compare: kind "joint".\n' +
+        `- a council, scoring the work out of 10 round after round until both of you reach a bar: ${COUNCIL}, not this tool.\n` +
         `- Codex should make or change something: ${TASK}, not this tool.\n` +
         '- you build it and Codex reviews until it approves: build, then kind "review", scope "session", loop: true; recheck after your fixes until it approves.\n' +
         `- work on it together, split it between you: start a job with new_job, then hand Codex parts with ${TASK} and have it review yours, each with job.\n\n` +
@@ -11780,6 +12932,81 @@ export const register: Register = (on, options) => {
           pictures: { type: 'boolean', description: 'Stop the pictures being painted.' },
           all: { type: 'boolean', description: 'Stop everything Codex is doing.' },
         },
+      },
+    })
+
+    await offer({
+      name: 'council',
+      description:
+        "Convene a council on a piece of work: you and Codex each review it on your own and score it out of 10, round after round, until every seat reaches the user's bar. Use it when the user asks for a council, in whatever words (\"council this\", \"get it to 9/10\", \"score it until it's ready\"); never on your own initiative.\n\n" +
+        'How it goes:\n' +
+        '- Before you start it, fix what you already know is wrong and run the checks: the council scores the work as it is.\n' +
+        `- action "start" (target: the user's bar, default ${COUNCIL_TARGET}; rounds: the most it sits, default ${COUNCIL_ROUNDS}): Codex scores round 1 while you take your seat, reviewing on your own (best in a fresh read-only subagent, so you are not scoring your own work). Hand your seat in with action "score". Codex's score stays sealed from you until yours is in; then both are revealed together and the user sees the scoreboard.\n` +
+        '- Below the bar: check both seats\' findings against the code, fix the in-scope ones you agree with, run the checks, then action "next" with what you fixed and declined. Codex scores again with its context; you take your seat again.\n' +
+        '- It stops when every seat reaches the bar, at the round limit (ask the user before more: go_ahead), or when the scores stall (check in first). action "end" closes it early, with why.\n' +
+        '- Keep the scope where it is: ideas beyond the brief go in parked, never into fixes during the council. The result ends with a "Council review" scoreboard: put it in the pull request description when the work ends in one.\n\n' +
+        "Each round is one Codex run on the user's Codex quota; the user watches it live.",
+      inputSchema: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['start', 'score', 'next', 'end'], description: 'start a council; score: hand in your seat for the current round; next: start the next round after your fixes; end: close it early.' },
+          council: { type: 'string', description: 'score, next, end: the council id, like K7Q2.' },
+          request: { type: 'string', description: 'start: what the council reviews, and what the work set out to do, as to a senior colleague.' },
+          brief: { type: 'string', description: 'start: what the work set out to do, the yardstick both seats score against, when request says more than that. Default: request.' },
+          title: { type: 'string', description: 'start: a short name (up to ~60 characters), shown on the scoreboard.' },
+          target: { type: 'integer', minimum: 1, maximum: 10, description: `start: the bar every seat must reach, out of 10. The user's number when they give one; default ${COUNCIL_TARGET}.` },
+          rounds: { type: 'integer', minimum: 1, maximum: 10, description: `start: the most rounds it sits before it stops and asks. Default ${COUNCIL_ROUNDS}.` },
+          scope: {
+            type: 'string',
+            enum: ['uncommitted', 'session', 'branch', 'commit', 'files'],
+            description: 'start: what the council looks at: uncommitted (default) changes, session (the files you changed in this conversation), this branch against base, one commit, or the listed files.',
+          },
+          base: { type: 'string', description: 'start: base branch for scope "branch". Default main.' },
+          commit: { type: 'string', description: 'start: commit for scope "commit".' },
+          files: { type: 'array', items: { type: 'string' }, description: 'start: files to look at first (repo-relative).' },
+          context: { type: 'string', description: 'start: background Codex cannot see: constraints from the user, decisions made.' },
+          lens: { type: 'string', enum: Object.keys(LENSES), description: 'start: what the council looks hardest at. Default: everything.' },
+          model: { type: 'string', description: "start: Codex model. Default: the user's pick." },
+          effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], description: "start: reasoning effort, the same every round. Default: the user's pick." },
+          score: { type: 'integer', minimum: 0, maximum: 10, description: "score: your seat's score out of 10, on the council's scale." },
+          summary: { type: 'string', description: "score: your seat's view in two to four sentences." },
+          gap: { type: 'string', description: 'score: what keeps it from the bar, in one sentence; empty when it reaches it.' },
+          findings: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                severity: { type: 'string', enum: ['high', 'medium', 'low'] },
+                title: { type: 'string' },
+                file: { type: 'string' },
+                line: { type: 'integer' },
+                detail: { type: 'string', description: 'What goes wrong and when.' },
+                suggestion: { type: 'string', description: 'How to fix it.' },
+              },
+              required: ['severity', 'title', 'detail'],
+            },
+            description: "score: your seat's in-scope findings, the ones that cost it points.",
+          },
+          parked: {
+            type: 'array',
+            items: { type: 'object', properties: { title: { type: 'string' }, detail: { type: 'string' } }, required: ['title'] },
+            description: 'score: ideas beyond the brief: shown, never scored, left for later.',
+          },
+          fixed: { type: 'array', items: { type: 'string' }, description: "next: the finding ids you fixed since the last round (Codex's F ids, your seats' C ids)." },
+          declined: {
+            type: 'array',
+            items: { type: 'object', properties: { finding: { type: 'string' }, reason: { type: 'string' } }, required: ['finding', 'reason'] },
+            description: 'next: the findings you will not fix, and why (beyond the brief, or wrong).',
+          },
+          changes: { type: 'string', description: 'next: what you changed since the last round, in a few lines.' },
+          checks: { type: 'string', description: 'next: the checks you ran (tests, types, lint) and how they went.' },
+          go_ahead: {
+            type: 'boolean',
+            description: 'start: the user agreed to go ahead after a warning (Codex usage at 90% or more, a very large change). next: the user agreed to sit another round past the limit, or after the scores stalled.',
+          },
+          reason: { type: 'string', description: 'end: why it ends before passing.' },
+        },
+        required: ['action'],
       },
     })
 
@@ -12097,6 +13324,136 @@ export const register: Register = (on, options) => {
     return { result: done ? `${jobNews}${resultText(done, await all($))}` : 'Codex did not answer.' }
   })
 
+  on('tool.call', { tool: COUNCIL }, async ($, e) => {
+    const a = e as unknown as {
+      action?: string
+      council?: string
+      request?: string
+      brief?: string
+      title?: string
+      target?: number
+      rounds?: number
+      scope?: string
+      base?: string
+      commit?: string
+      files?: string[]
+      context?: string
+      lens?: string
+      model?: string
+      effort?: string
+      score?: number
+      summary?: string
+      gap?: string
+      findings?: { severity?: string; title?: string; file?: string; line?: number; detail?: string; suggestion?: string }[]
+      parked?: { title?: string; detail?: string }[]
+      fixed?: string[]
+      declined?: { finding?: string; reason?: string }[]
+      changes?: string
+      checks?: string
+      go_ahead?: boolean
+      reason?: string
+    }
+    const action = a.action === 'score' || a.action === 'next' || a.action === 'end' ? a.action : 'start'
+    const id = String(a.council ?? '').trim().toUpperCase().replace(/-\d+$/, '')
+    await ensureCwd($)
+    if (action !== 'start' && !id) return { deny: `Name the council: council "K7Q2", from the message that started it.` }
+    const parked = (Array.isArray(a.parked) ? a.parked : []).map(x => ({ title: String(x?.title ?? '').trim(), detail: String(x?.detail ?? '').trim() || undefined })).filter(x => x.title)
+    if (action === 'score') {
+      if (!Number.isFinite(Number(a.score))) return { deny: 'Give your seat\'s score: score, a whole number from 0 to 10.' }
+      const found = (Array.isArray(a.findings) ? a.findings : []).map(x => ({
+        severity: (x.severity === 'high' || x.severity === 'low' ? x.severity : 'medium') as Finding['severity'],
+        title: String(x.title ?? '').trim() || 'Untitled',
+        file: x.file?.trim() || undefined,
+        line: Number.isFinite(Number(x.line)) && x.line ? Number(x.line) : undefined,
+        detail: String(x.detail ?? '').trim(),
+        suggestion: x.suggestion?.trim() || undefined,
+      }))
+      try {
+        const text = await submitSeat($, id, { score: Number(a.score), summary: String(a.summary ?? '').trim() || `Scored ${clampScore(a.score)}/10.`, gap: a.gap, findings: found, parked, toolUseId: e.tool_use_id })
+        const s = councilState(await all($), id)
+        if (s?.revealed) {
+          const m = s.board[s.n - 1] as CouncilMark
+          $.ui.toast(s.phase === 'passed' ? `The council passes · Claude ${m.claude} · Codex ${m.codex}` : `Council round ${s.n} · Claude ${m.claude} · Codex ${m.codex} · bar ${s.target}`, { timeoutMs: 6000 })
+          await markHanded($, [s.last.id])
+        }
+        return { result: text }
+      } catch (err) {
+        return { deny: message(err) }
+      }
+    }
+    if (action === 'end') {
+      try {
+        await endCouncil($, id, 'claude', String(a.reason ?? '').trim())
+        const s = councilState(await all($), id)
+        return { result: s ? `Council ${id} is closed (${councilWords(s)}). Tell the user where it stood: the scoreboard, what is still between the work and ${s.target}, and the parked ideas.\n\n${councilMarkdown(await all($), id)}` : `Council ${id} is closed.` }
+      } catch (err) {
+        return { deny: message(err) }
+      }
+    }
+    const stop = await guard($, a.go_ahead === true)
+    if (stop) return { deny: stop }
+    if (action === 'next') {
+      try {
+        const started = await nextCouncilRound($, id, {
+          fixed: (Array.isArray(a.fixed) ? a.fixed : []).map(String),
+          declined: (Array.isArray(a.declined) ? a.declined : []).map(d => ({ id: String(d?.finding ?? ''), reason: String(d?.reason ?? '') })),
+          changes: a.changes,
+          checks: a.checks,
+          goAhead: a.go_ahead === true,
+          from: 'claude',
+          toolUseId: e.tool_use_id,
+          background: true,
+        })
+        launch($, started.consult.id, started.prompt)
+        const s = councilState(await all($), id) as CouncilState
+        return { result: `Round ${s.n} of ${s.max} of council ${id} has started: Codex is scoring the work again, with its context, and the user watches the scoreboard. ${seatWords(id, s.target)}` }
+      } catch (err) {
+        return { deny: message(err) }
+      }
+    }
+    // Start: what it looks at, the bar and the rounds, then Codex's first round; Claude takes its seat meanwhile.
+    const request = String(a.request ?? '').trim()
+    if (!request) return { deny: 'Say what the council reviews (request), and what the work set out to do.' }
+    const p = await read($, prefs)
+    const given = (Array.isArray(a.files) ? a.files : []).map(String)
+    const scopeName = a.scope ?? (given.length ? 'files' : 'uncommitted')
+    const files = scopeName === 'session' ? await sessionFiles($) : given
+    const scope = await describeScope($, scopeName, a.base?.trim() || 'main', a.commit?.trim() || 'HEAD', files)
+    if (scopeName === 'uncommitted' && /^no changes/.test(scope?.diffstat ?? '')) return { deny: 'There are no uncommitted changes for the council to look at. Pick another scope (session, branch, commit or files).' }
+    const size = diffSize(scope?.diffstat)
+    if (!a.go_ahead && (size.files > 40 || size.lines > 4000)) {
+      return { deny: `That is a big change (${scope?.diffstat}): every council round would take long and use a lot of the user's Codex quota. Ask the user whether to go ahead or narrow it (scope files, a commit); if they say go ahead, call again with go_ahead: true.` }
+    }
+    const target = Number.isFinite(Number(a.target)) ? Math.min(10, Math.max(1, Math.round(Number(a.target)))) : COUNCIL_TARGET
+    const rounds = Number.isFinite(Number(a.rounds)) ? Math.min(10, Math.max(1, Math.round(Number(a.rounds)))) : COUNCIL_ROUNDS
+    const lens = a.lens && a.lens in LENSES && a.lens !== 'general' ? (a.lens as Lens) : undefined
+    let started: { consult: Consult; prompt: string }
+    try {
+      started = await startFirst($, {
+        kind: 'council',
+        from: 'claude',
+        toolUseId: e.tool_use_id,
+        title: cut(a.title?.trim() || request, 70),
+        request,
+        context: a.context?.trim() || undefined,
+        lens,
+        scope,
+        files,
+        model: a.model?.trim() || p.model,
+        effort: a.effort?.trim() || p.effort,
+        background: true,
+        council: { target, rounds, brief: a.brief?.trim() || request },
+      })
+    } catch (err) {
+      return { deny: message(err) }
+    }
+    const { consult, prompt } = started
+    launch($, consult.id, prompt)
+    return {
+      result: `Council ${consult.thread} sits: you and Codex (${consult.model}, ${consult.effort} reasoning), up to ${plural(rounds, 'round')}, bar ${target}/10. Codex is scoring round 1 now; its score stays sealed until yours is in, and the user watches the scoreboard. Tell the user in a line, then: ${seatWords(consult.thread, target)}`,
+    }
+  })
+
   on('tool.call', { tool: TASK }, async ($, e) => {
     const a = e as unknown as { request?: string; title?: string; context?: string; files?: string[]; images?: string[]; from_review?: string; model?: string; effort?: string; wait?: boolean; go_ahead?: boolean; loop?: boolean; job?: string; new_job?: string }
     const request = String(a.request ?? '').trim()
@@ -12352,6 +13709,8 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'ToolResult', props: { tool: OLD_TRIAGE } }, async ($, e) => hidden($, e))
   on('ui.render', { component: 'ToolUse', props: { tool: APPLY } }, ($, e, next) => applyCard($, e, next))
   on('ui.render', { component: 'ToolResult', props: { tool: APPLY } }, async ($, e) => hidden($, e))
+  on('ui.render', { component: 'ToolUse', props: { tool: COUNCIL } }, ($, e, next) => councilCard($, e, next))
+  on('ui.render', { component: 'ToolResult', props: { tool: COUNCIL } }, async ($, e) => hidden($, e))
   on('ui.render', { component: 'ToolUse', props: { tool: TELL } }, ($, e, next) => tellCard($, e, next))
   on('ui.render', { component: 'ToolResult', props: { tool: TELL } }, async ($, e) => hidden($, e))
   on('ui.render', { component: 'ToolUse', props: { tool: IMAGE } }, ($, e, next) => imageCard($, e, next))

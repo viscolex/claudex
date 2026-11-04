@@ -1,0 +1,119 @@
+{
+  "type": "object",
+  "properties": {
+    "score": {
+      "type": "integer"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "gap": {
+      "type": "string"
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": [
+              "high",
+              "medium",
+              "low"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "file": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "line": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "detail": {
+            "type": "string"
+          },
+          "suggestion": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "severity",
+          "title",
+          "file",
+          "line",
+          "detail",
+          "suggestion"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "parked": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "detail"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "responses": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "finding": {
+            "type": "string"
+          },
+          "position": {
+            "type": "string",
+            "enum": [
+              "concede",
+              "hold",
+              "refine"
+            ]
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "finding",
+          "position",
+          "text"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "score",
+    "summary",
+    "gap",
+    "findings",
+    "parked",
+    "responses"
+  ],
+  "additionalProperties": false
+}

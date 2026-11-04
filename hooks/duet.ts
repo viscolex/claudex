@@ -62,19 +62,19 @@ const room = (px: number, size: number, mono = false) => Math.max(4, Math.floor(
 const n1 = (v: number) => v.toFixed(1)
 
 /** A short stable id for one drawing's defs (several drawings share a page). */
-function idOf(...parts: (string | number | undefined)[]) {
+export function idOf(...parts: (string | number | undefined)[]) {
   let h = 2166136261
   for (const ch of parts.join('|')) h = Math.imul(h ^ ch.charCodeAt(0), 16777619)
   return `d${(h >>> 0).toString(36)}`
 }
 
-const EASE = 'calcMode="spline" keyTimes="0;1" keySplines=".2 .8 .2 1"'
+export const EASE = 'calcMode="spline" keyTimes="0;1" keySplines=".2 .8 .2 1"'
 
 // ---------------------------------------------------------------------------
 // Ground
 
 /** The card: ink, a faint dot grid, the mover's colour washing in from its side, and a rim. */
-function ground(id: string, W: number, H: number, colour: string, o: { controls?: number; rx?: number; from?: 'left' | 'right' } = {}) {
+export function ground(id: string, W: number, H: number, colour: string, o: { controls?: number; rx?: number; from?: 'left' | 'right' } = {}) {
   const rx = o.rx ?? 16
   const controls = o.controls ?? 0
   const DW = W - controls
@@ -91,7 +91,7 @@ function ground(id: string, W: number, H: number, colour: string, o: { controls?
 }
 
 /** Fades and lifts a line into place as it changes: the news of the moment. */
-function arrive(inner: string, delay = 0) {
+export function arrive(inner: string, delay = 0) {
   return `<g opacity="0"><animate attributeName="opacity" from="0" to="1" begin="${delay}s" dur="0.4s" fill="freeze"/><animateTransform attributeName="transform" type="translate" from="0 5" to="0 0" begin="${delay}s" dur="0.45s" fill="freeze" ${EASE}/>${inner}</g>`
 }
 
@@ -99,10 +99,10 @@ function arrive(inner: string, delay = 0) {
 // Words
 
 /** How wide a kicker sets: capitals, tracked. */
-const kickerWidth = (words: string) => words.length * (10.5 * 0.66 + 1.5)
+export const kickerWidth = (words: string) => words.length * (10.5 * 0.66 + 1.5)
 
 /** A kicker cut to its room: the part after the last dot goes first. */
-function fitKicker(words: string, px: number) {
+export function fitKicker(words: string, px: number) {
   if (kickerWidth(words) <= px) return words
   const head = words.split(' · ')[0] as string
   if (kickerWidth(head) <= px) return head
@@ -110,7 +110,7 @@ function fitKicker(words: string, px: number) {
 }
 
 /** The kicker: who does what, in tracked capitals, in the mover's colour. */
-function kicker(x: number, y: number, words: string, colour: string) {
+export function kicker(x: number, y: number, words: string, colour: string) {
   return `<text x="${x}" y="${y}" font-size="10.5" font-weight="750" letter-spacing="1.5" fill="${colour}">${escape(words.toUpperCase())}</text>`
 }
 
@@ -144,7 +144,7 @@ function twoLines(text: string, perLine: number): [string, string?] {
 }
 
 /** The facts line: a small progress rail first when there is one, then facts with soft dots between. */
-function facts(x: number, y: number, maxW: number, items: (string | [string, string])[], progress?: { steps: number; current: number; label: string; colour: string; live: boolean; id: string }) {
+export function facts(x: number, y: number, maxW: number, items: (string | [string, string])[], progress?: { steps: number; current: number; label: string; colour: string; live: boolean; id: string }) {
   let out = ''
   let at = x
   if (progress && progress.steps > 1) {
@@ -179,7 +179,7 @@ function facts(x: number, y: number, maxW: number, items: (string | [string, str
 }
 
 /** The clock in the corner: a live dot (or quiet), the time counting by itself. */
-function clockCorner(right: number, y: number, r: { clock?: number; time: string; stalled?: boolean; live: boolean; id: string; label?: string }) {
+export function clockCorner(right: number, y: number, r: { clock?: number; time: string; stalled?: boolean; live: boolean; id: string; label?: string }) {
   const clockW = 4 * 13 * 0.62 + 6
   const dot = r.stalled ? D.warn : r.live ? D.good : '#fff'
   const word = r.label ?? (r.stalled ? 'quiet' : r.live ? 'live' : '')
