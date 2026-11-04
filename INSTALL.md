@@ -19,7 +19,7 @@ by step), and the Claudex pane (`/claudex`). It works on macOS and Windows.
 ## What you need
 
 - **Claude Code**, the desktop app or the terminal.
-- **Codex, signed in with your ChatGPT account.** The Codex desktop app is best (Claudex uses its CLI). The Codex CLI alone also works (`npm i -g @openai/codex`, then `codex login`). Claudex 2.7 is checked with Codex 0.164 to 0.166.
+- **Codex, signed in with your ChatGPT account.** The Codex desktop app is best (Claudex uses its CLI). The Codex CLI alone also works (`npm i -g @openai/codex`, then `codex login`). Claudex 2.8 is checked with Codex 0.164 to 0.166.
 - **Node.js 20 or newer** (`brew install node` on a Mac).
 - **git.**
 

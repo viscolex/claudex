@@ -355,7 +355,7 @@ Stop Codex.
 | Needs | Details |
 |---|---|
 | **Claude Code** | The desktop app or the terminal |
-| **Codex** | Signed in with your ChatGPT account. The Codex desktop app works best, because Claudex uses its CLI. The CLI on its own also works: `npm i -g @openai/codex`, then `codex login`. Claudex 2.7 is checked with Codex 0.164 to 0.166 |
+| **Codex** | Signed in with your ChatGPT account. The Codex desktop app works best, because Claudex uses its CLI. The CLI on its own also works: `npm i -g @openai/codex`, then `codex login`. Claudex 2.8 is checked with Codex 0.164 to 0.166 |
 | **Node.js** | 20 or newer |
 | **git** | Any recent version |
 
