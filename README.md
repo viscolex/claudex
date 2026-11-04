@@ -7,7 +7,7 @@
 Reviews and second opinions, tasks in their own worktree, build loops, shared jobs and pictures:<br>
 Codex on your ChatGPT plan, brought into Claude Code, live in the chat.
 
-[![version](https://img.shields.io/badge/version-2.7.0-4c8eda?style=flat-square)](.claude-plugin/plugin.json)
+[![version](https://img.shields.io/badge/version-2.7.1-4c8eda?style=flat-square)](.claude-plugin/plugin.json)
 [![Codex](https://img.shields.io/badge/checked_with_Codex-0.164%E2%80%930.166-8B93F8?style=flat-square)](#requirements)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-mod-D97757?style=flat-square&logo=claude&logoColor=white)](https://claude.com/claude-code)
 [![Codex](https://img.shields.io/badge/Codex-ChatGPT_plan-8B93F8?style=flat-square&logo=openai&logoColor=white)](https://openai.com/codex)

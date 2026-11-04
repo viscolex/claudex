@@ -1001,6 +1001,11 @@ test('other chats: their runs show apart from this chat’s, findings group by c
     props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 100, scroll: { offset: 0, bodyRows: 10 }, view: {} },
   })
   expect(await band.find({ type: 'Text', text: /Idle here · working in another chat: Joint review · Game session page/ })).toBeDefined()
+  // However long those words, they give way: Open Claudex sits in a part of the line that never shrinks.
+  expect((await band.find({ key: 'band-idle-words' }))?.props).toMatchObject({ minWidth: 0, flexShrink: 1, overflow: 'hidden' })
+  const actions = await band.find({ key: 'band-idle-actions' })
+  expect(actions?.props?.flexShrink).toBe(0)
+  expect(JSON.stringify(actions)).toContain('band-open')
   await band.unmount()
 })
 

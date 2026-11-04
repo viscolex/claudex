@@ -8771,16 +8771,23 @@ export async function band($: Engine, e: any, next: (e: any) => Promise<any>) {
       rows.push(
         <Box key="band-idle" flexDirection="row" gap={1} alignItems="center" paddingLeft={1}>
           {/* The pair, small: idle, they toss a note now and then (a new scene every few minutes, so it plays again). */}
-          {scenePicture(el, miniStageSvg({ state: needYou.length ? 'you' : otherWork ? 'working' : 'idle', codexSprite: mascot?.idle }), `band-pair:${needYou.length ? 'you' : 'idle'}`, 'Claude and Codex', MINI_STAGE.width, scenes)}
-          <Svg source={wordmarkSvg(15)} alt="Claudex" width={svgSize(wordmarkSvg(15))?.width ?? 64} height={svgSize(wordmarkSvg(15))?.height ?? 20} />
-          <Box flexShrink={1} flexGrow={1}>
+          <Box flexShrink={0}>
+            {scenePicture(el, miniStageSvg({ state: needYou.length ? 'you' : otherWork ? 'working' : 'idle', codexSprite: mascot?.idle }), `band-pair:${needYou.length ? 'you' : 'idle'}`, 'Claude and Codex', MINI_STAGE.width, scenes)}
+          </Box>
+          <Box flexShrink={0}>
+            <Svg source={wordmarkSvg(15)} alt="Claudex" width={svgSize(wordmarkSvg(15))?.width ?? 64} height={svgSize(wordmarkSvg(15))?.height ?? 20} />
+          </Box>
+          {/* The words give way, however long: cut at the edge, never pushing Open Claudex off the band. */}
+          <Box key="band-idle-words" flexShrink={1} flexGrow={1} minWidth={0} overflow="hidden">
             <Text dimColor wrap="truncate-end">
               {otherWork ? `Idle here · working in another chat: ${otherWork}` : lastWords ? `Idle · last: ${lastWords}` : 'Idle · nothing runs until you start it'}
             </Text>
           </Box>
-          {needs}
-          {top && <Svg source={gaugePicture(ringSvg(top.percent, 26), `band:${top.percent}`)} alt={used} width={26} height={26} />}
-          <Button key="band-open" label="Open Claudex" onPress={() => void openPane($)} />
+          <Box key="band-idle-actions" flexDirection="row" gap={1} alignItems="center" flexShrink={0}>
+            {needs}
+            {top && <Svg source={gaugePicture(ringSvg(top.percent, 26), `band:${top.percent}`)} alt={used} width={26} height={26} />}
+            <Button key="band-open" label="Open Claudex" onPress={() => void openPane($)} />
+          </Box>
         </Box>,
       )
     }
@@ -8800,8 +8807,10 @@ export async function band($: Engine, e: any, next: (e: any) => Promise<any>) {
         {needs}
         {quota && <Text dimColor>· {quota} used</Text>}
         <Box flexGrow={1} />
-        <Button key="band-open" plain dimColor label="Open Claudex" onPress={() => void openPane($)} />
-        {desktop && <Button key="band-unfold" plain dimColor label="▾" onPress={() => setSmall(false)} />}
+        <Box flexDirection="row" gap={1} alignItems="center" flexShrink={0}>
+          <Button key="band-open" plain dimColor label="Open Claudex" onPress={() => void openPane($)} />
+          {desktop && <Button key="band-unfold" plain dimColor label="▾" onPress={() => setSmall(false)} />}
+        </Box>
       </Box>,
     )
     for (const id of jobsLive) {
