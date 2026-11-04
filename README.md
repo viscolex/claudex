@@ -43,7 +43,9 @@ Say **"council this until you both give it 9/10"**. Claude and Codex each review
 their own and give it a **score out of 10**, sealed until both are in, then revealed together.
 Below your bar, Claude fixes what's in scope, runs the checks, and they score it again, round
 after round, until both reach it. Ideas beyond the brief are **parked, not taken on**, so the
-scope stays where it is. At the end you get a scoreboard, ready for your pull request.
+scope stays where it is. For UI work, give it a page: Claudex **screenshots it at desktop and
+phone size every round** for both of them, and Claude can add its own screenshots of what a page
+load won't show. At the end you get a scoreboard, ready for your pull request.
 
 </td>
 </tr>
@@ -283,7 +285,19 @@ Claude first fixes what it already knows is wrong and runs the checks. Then Clau
 each score the work on their own, against what it set out to do. Below the bar, Claude fixes
 the findings it agrees with that are in scope, says which it declined and why, and calls the
 next round. You can also start one from the pane: **New › Convene a council**, where you pick
-the bar and the most rounds.
+what it judges, the bar and the most rounds.
+
+For a UI, point it at the page:
+
+```text
+Council the pricing page at http://localhost:3000/pricing until you both give it 9/10.
+```
+
+Every round, Claudex screenshots the page at desktop and phone size for both seats, so each round
+judges the page as it looks after Claude's latest changes; a second URL (the live site, say) is
+screenshotted beside it to compare. Claude can add screenshots of its own, such as a menu open, a
+signed-in view or an error state, and takes them again each round. It works before you've changed
+any code, too.
 </details>
 
 <details>
@@ -346,7 +360,7 @@ Stop Codex.
 | **git** | Any recent version |
 
 Optional, per project: **Playwright** (`npm i -D playwright`) plus Chrome or Edge for visual
-reviews, and **sharp** for WebP copies of pictures. Cut-outs need nothing extra.
+reviews and councils on a page, and **sharp** for WebP copies of pictures. Cut-outs need nothing extra.
 
 ## Install
 

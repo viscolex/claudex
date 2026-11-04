@@ -1600,8 +1600,38 @@ const COUNCIL_SCHEMA_LINES = (target: number) => [
   '- parked: ideas beyond the brief (title and detail), or empty.',
 ]
 
+/** How to judge a page from its screenshots: the one place it is said (visual reviews and councils). */
+const LOOK_WORDS =
+  'Judge it as a person sees and uses it: layout, hierarchy, spacing and alignment, type, colour and contrast, states, and how the phone size holds up; where a before is attached, what got better and what got worse. Tie each problem to the code that causes it (file and line) where you can, and say which screenshot shows it.'
+
+/** The pictures a council round attaches, in words: Claudex's screenshots of the page, and Claude's own. */
+function councilPictures(targets: { label: string; url: string }[] | undefined, own: string[] | undefined, fresh: boolean) {
+  const lines: string[] = []
+  const page = targets?.find(t => t.label === 'after')
+  const before = targets?.find(t => t.label === 'before')
+  if (page) {
+    lines.push(
+      `${fresh ? 'Fresh screenshots of the page as it is now' : 'Screenshots of the page'} (${page.url}) are attached, taken at desktop and phone size and named after-desktop and after-phone${before ? `; before-desktop and before-phone show how it was (${before.url})` : ''}.`,
+    )
+  }
+  if (own?.length) lines.push(`Claude's own screenshots are attached too (${own.map(fileName).join(', ')}): views or states Claude captured itself, which a plain page load may not show.`)
+  if (lines.length) lines.push(LOOK_WORDS)
+  return lines
+}
+
 /** Codex's first round on a council: the brief, what to look at, the scale. */
-function councilFirstPrompt(input: { request: string; brief: string; target: number; rounds: number; scope?: string; files: string[]; lens?: Lens; background: boolean }) {
+function councilFirstPrompt(input: {
+  request: string
+  brief: string
+  target: number
+  rounds: number
+  scope?: string
+  files: string[]
+  lens?: Lens
+  background: boolean
+  targets?: { label: string; url: string }[]
+  images?: string[]
+}) {
   const lines = [
     `You sit on a council with Claude (another AI coding agent working with the user). Each of you reviews the same work on your own and scores it out of 10; neither sees the other's score until both are in. The council sits up to ${plural(input.rounds, 'round')}, until every seat scores at least ${input.target}. Between rounds Claude fixes what is in scope and runs the checks, and you score the work again.`,
     '',
@@ -1611,7 +1641,10 @@ function councilFirstPrompt(input: { request: string; brief: string; target: num
   if (input.request.trim() && input.request.trim() !== input.brief.trim()) lines.push('', "Claude's request:", input.request.trim())
   if (input.background) lines.push('', 'Attached as context: Claude\'s background ("background").')
   if (input.scope) lines.push('', `What to review: ${input.scope}`)
+  else if (input.targets?.length || input.images?.length) lines.push('', 'What to review: the page as the screenshots show it, and the code behind it.')
   if (input.files.length) lines.push('', `Look first at: ${input.files.join(', ')}`)
+  const pictures = councilPictures(input.targets, input.images, false)
+  if (pictures.length) lines.push('', ...pictures)
   const lens = input.lens ? LENSES[input.lens]?.words : ''
   if (lens) lines.push('', lens)
   lines.push('', ...councilScale(input.target), '', 'Your final reply must match the JSON schema:', ...COUNCIL_SCHEMA_LINES(input.target), '- responses: empty.')
@@ -1619,7 +1652,7 @@ function councilFirstPrompt(input: { request: string; brief: string; target: num
 }
 
 /** Codex's next round: what Claude did since the last, its own findings so far, and the same scale. */
-function councilNextPrompt(o: { n: number; target: number; between: NonNullable<Consult['between']>; theirs: Finding[]; mine: Finding[] }) {
+function councilNextPrompt(o: { n: number; target: number; between: NonNullable<Consult['between']>; theirs: Finding[]; mine: Finding[]; targets?: { label: string; url: string }[]; images?: string[] }) {
   const titleOf = (id: string) => [...o.theirs, ...o.mine].find(f => f.id === id)?.title
   const named = (id: string) => `${id}${titleOf(id) ? ` (${titleOf(id)})` : ''}`
   const lines = [`Council round ${o.n}: Claude has worked on the code since the last round. Score it again as it stands now, using the current files and \`git diff\`.`]
@@ -1628,6 +1661,8 @@ function councilNextPrompt(o: { n: number; target: number; between: NonNullable<
   if (o.between.changes) lines.push('', 'What Claude changed:', o.between.changes.trim())
   if (o.between.checks) lines.push('', 'Checks Claude ran:', o.between.checks.trim())
   if (o.theirs.length) lines.push('', 'Your findings so far:', ...o.theirs.map(f => `- ${f.id}: ${f.title}${f.file ? ` (${where(f)})` : ''} [${f.state === 'dismissed' ? 'declined' : f.state}]`))
+  const pictures = councilPictures(o.targets, o.images, true)
+  if (pictures.length) lines.push('', ...pictures)
   lines.push(
     '',
     `The same brief, the same scale, the same bar (${o.target}).`,
@@ -1764,12 +1799,27 @@ export function councilMarkdown(list: Consult[], thread: string) {
 }
 
 /** What Claude does on its seat: review on its own, score it, hand it in. The one place it is said. */
-function seatWords(thread: string, target: number) {
+function seatWords(thread: string, target: number, round?: Consult) {
+  const page = round?.targets?.find(t => t.label === 'after')
+  const shots = round?.shots?.map(x => x.path) ?? []
+  const look = page
+    ? shots.length
+      ? `Look at the page too: this round's screenshots are ${shots.join(', ')} (Read them), or open ${page.url} in your own browser.`
+      : `Look at the page too: Claudex is screenshotting ${page.url} at desktop and phone size for this round, into ${shotsDir(round?.id ?? thread)}; Read them once they are there, or open the page in your own browser.`
+    : ''
   return [
+    look,
     `Take your seat: review the work on your own against the brief, without reading Codex's findings. Best in a fresh, read-only subagent (the Agent tool) given only the brief and what to look at, so your seat is not scoring work you wrote.`,
     `Score it out of 10 on the council's scale (10 nothing left worth changing for what it set out to do; 9 ready to ship, small polish at most; 8 good, a few real but minor issues; 7 works but needs fixes before it ships; 5–6 significant problems; 4 or less major problems). The bar is ${target}. Ideas beyond the brief go in parked, not the score.`,
     `Hand it in with ${COUNCIL} (action "score", council "${thread}", score, summary, gap, findings, parked).`,
-  ].join(' ')
+  ]
+    .filter(Boolean)
+    .join(' ')
+}
+
+/** Where a round's screenshots go: under Claudex's own folder, never the repo. */
+function shotsDir(id: string) {
+  return joinPath(host.home, '.claude', 'claudex', 'shots', id)
 }
 
 /** A council round, as Claude reads it: sealed until its seat is in, then the reveal and what to do next. */
@@ -1782,7 +1832,7 @@ function councilText(c: Consult, list: Consult[]) {
     return `Council ${c.thread} has ended${ended ? `, by ${ended.by === 'user' ? 'the user' : 'you'}: ${ended.why}` : ''}. Start no more rounds of it. If the user has not heard where it stood, tell them: the scoreboard, what was still between the work and ${s.target}, and the parked ideas.\n\n${councilMarkdown(list, c.thread)}`
   }
   if (c.status === 'failed' || c.status === 'stopped') return `${tag}: Codex did not score (${c.error ?? c.status}). The user can run it again from its card; your seat stands.`
-  if (!c.seat) return `${tag}: Codex has scored it after ${elapsed(c)}. Its score and findings stay sealed until your seat is in. ${seatWords(c.thread, s.target)}`
+  if (!c.seat) return `${tag}: Codex has scored it after ${elapsed(c)}. Its score and findings stay sealed until your seat is in. ${seatWords(c.thread, s.target, c)}`
   const mine = (s.head.mine ?? []).filter(f => c.seat?.findings.includes(f.id))
   const lines = [
     `${tag}: the reveal. Bar: ${s.target}/10.`,
@@ -1794,6 +1844,8 @@ function councilText(c: Consult, list: Consult[]) {
     const titles = new Map(threadFindings(list, c.thread).map(f => [f.id, f.title]))
     lines.push('', 'Codex on its earlier findings:', ...c.responses.map(r => `- ${r.finding} (${titles.get(String(r.finding).toUpperCase()) ?? 'finding'}): ${POSITION[r.position] ?? r.position} — ${r.text}`))
   }
+  const looked = [...(c.shots ?? []).map(x => x.path), ...(c.images ?? []).filter(x => !(c.shots ?? []).some(y => y.path === x))]
+  if (looked.length) lines.push('', `What both seats looked at this round: ${looked.join(', ')}`)
   lines.push('', "Codex's findings:", c.findings.length ? findingLines(c.findings) : '(none new)')
   if (mine.length) lines.push('', "Your seat's findings:", findingLines(mine))
   const parked = [...(c.parked ?? []).map(p => ({ ...p, by: 'Codex' })), ...(c.seat.parked ?? []).map(p => ({ ...p, by: 'your seat' }))]
@@ -1827,7 +1879,18 @@ function councilText(c: Consult, list: Consult[]) {
 export async function nextCouncilRound(
   $: Engine,
   thread: string,
-  r: { fixed: string[]; declined: { id: string; reason: string }[]; changes?: string; checks?: string; goAhead: boolean; from: 'claude' | 'user'; toolUseId?: string; background: boolean },
+  r: {
+    fixed: string[]
+    declined: { id: string; reason: string }[]
+    changes?: string
+    checks?: string
+    /** Claude's own screenshots for this round (the earlier ones show the page as it was). */
+    images?: string[]
+    goAhead: boolean
+    from: 'claude' | 'user'
+    toolUseId?: string
+    background: boolean
+  },
 ) {
   const list = await all($)
   const s = councilState(list, thread)
@@ -1838,7 +1901,7 @@ export async function nextCouncilRound(
   if (s.phase === 'ended') throw new Error(`Council ${thread} has ended. Start a new council to score the work again.`)
   if (s.phase === 'scoring') throw new Error(`Codex is still scoring round ${s.n} of ${thread}; wait for the reveal.`)
   if (s.phase === 'failed') throw new Error(`Codex's round ${s.n} of ${thread} did not finish. The user can run it again from its card.`)
-  if (s.phase === 'seat') throw new Error(`Round ${s.n} of ${thread} is not revealed yet: your seat is not in. ${seatWords(thread, s.target)}`)
+  if (s.phase === 'seat') throw new Error(`Round ${s.n} of ${thread} is not revealed yet: your seat is not in. ${seatWords(thread, s.target, s.last)}`)
   if ((s.phase === 'limit' || s.phase === 'stalled') && !r.goAhead) {
     throw new Error(
       s.phase === 'limit'
@@ -1878,6 +1941,9 @@ export async function nextCouncilRound(
     effort: s.head.effort,
     codexThread,
     between,
+    // A council on a page screenshots it again for every round; Claude's own pictures are this round's.
+    targets: s.head.targets,
+    images: r.images?.length ? r.images : undefined,
     chat: thisChat() || undefined,
     cwd: host.cwd || undefined,
     status: 'sending',
@@ -1903,7 +1969,7 @@ export async function nextCouncilRound(
     ),
   ])
   const after = await all($)
-  const prompt = councilNextPrompt({ n, target: s.target, between, theirs: threadFindings(after, thread).filter(f => f.id.startsWith('F')), mine: after.find(c => c.id === s.head.id)?.mine ?? [] })
+  const prompt = councilNextPrompt({ n, target: s.target, between, theirs: threadFindings(after, thread).filter(f => f.id.startsWith('F')), mine: after.find(c => c.id === s.head.id)?.mine ?? [], targets: s.head.targets, images: r.images })
   await patch($, consult.id, c => ({ ...c, sent: prompt }))
   return { consult: { ...consult, sent: prompt }, prompt }
 }
@@ -2677,7 +2743,7 @@ function firstPrompt(input: {
   if (input.kind === 'visual') {
     lines.push(
       '',
-      'Screenshots of the page are attached, named after-desktop and after-phone and, when given, before-desktop and before-phone (the page as it was). Judge it as a person sees and uses it: layout, hierarchy, spacing and alignment, type, colour and contrast, states, and how the phone size holds up; where a before is attached, what got better and what got worse. Tie each problem to the code that causes it (file and line) where you can, and say which screenshot shows it.',
+      `Screenshots of the page are attached, named after-desktop and after-phone and, when given, before-desktop and before-phone (the page as it was). ${LOOK_WORDS}`,
     )
   }
   if (input.kind === 'joint') {
@@ -3140,8 +3206,8 @@ async function runRound($: Engine, id: string, prompt: string): Promise<Consult 
         },
       }))
     }
-    // A visual review first takes its screenshots.
-    if (first.kind === 'visual' && first.targets?.length && !first.shots) {
+    // A visual review first takes its screenshots; a council on a page takes fresh ones every round.
+    if ((first.kind === 'visual' || first.kind === 'council') && first.targets?.length && !first.shots) {
       await apply(c => ({ ...c, note: 'Taking screenshots at desktop and phone size…' }))
       const taken = await captureShots($, id, first.targets)
       await apply(c => ({ ...c, note: undefined, shots: taken.shots, images: [...(c.images ?? []), ...taken.shots.map(x => x.path)] }))
@@ -4309,7 +4375,7 @@ export async function startFirst($: Engine, s: Start) {
     s.kind === 'task'
       ? taskPrompt({ from: s.from, request: s.request, files: s.files })
       : s.kind === 'council' && s.council
-        ? councilFirstPrompt({ request: s.request, brief: s.council.brief, target: s.council.target, rounds: s.council.rounds, scope: s.scope?.words, files: s.files, lens: s.lens, background: Boolean(s.context) })
+        ? councilFirstPrompt({ request: s.request, brief: s.council.brief, target: s.council.target, rounds: s.council.rounds, scope: s.scope?.words, files: s.files, lens: s.lens, background: Boolean(s.context), targets: s.targets, images: s.images })
         : firstPrompt({
           kind: s.kind,
           from: s.from,
@@ -5732,7 +5798,7 @@ export async function startAnother($: Engine, thread: string) {
 /** Screenshots of the pages a visual review looks at, with small previews for the cards. */
 async function captureShots($: Engine, id: string, targets: { label: string; url: string }[]) {
   // Not under the app's own data folders (Windows redirects a Store app's writes there) nor in the repo.
-  const dir = joinPath(host.home, '.claude', 'claudex', 'shots', id)
+  const dir = shotsDir(id)
   const out = await nodeScript($, 'capture.mjs', [host.cwd, dir, ...targets.map(t => `${t.label}=${t.url}`)], 300_000)
   const shots: { label: string; path: string; thumb?: string }[] = []
   for (const [i, shot] of ((out.shots ?? []) as { label: string; path: string }[]).entries()) {
@@ -7789,6 +7855,7 @@ function councilHeadline(s: CouncilState) {
     case 'seat':
       return "Codex has scored · Claude takes its seat"
     default: {
+      if (s.last.targets?.length && !s.last.shots && s.last.status === 'sending') return `Taking screenshots of ${pagePath(s.last)} for both seats`
       if (s.seatIn) return "Claude's score is in · Codex is still scoring"
       const step = [...s.last.steps].reverse().find(x => x.verb !== 'Note' && x.verb !== 'Think')
       return step && RUNNING.has(s.last.status) ? `Both scoring · ${step.verb === 'Read' ? 'Codex reads' : 'Codex:'} ${fileName(step.text)}` : 'Both scoring, each on its own'
@@ -7797,8 +7864,19 @@ function councilHeadline(s: CouncilState) {
 }
 
 /** The facts under it: what the round brought, and what it cost. */
+/** A page's path, for a line that has room for little: /pricing, or the host when it is the home page. */
+function pagePath(c: Consult) {
+  const url = c.targets?.find(t => t.label === 'after')?.url ?? ''
+  return url.replace(/^https?:\/\/[^/]+/, '') || url.replace(/^https?:\/\//, '') || 'the page'
+}
+
 function councilFacts(list: Consult[], s: CouncilState): (string | [string, string])[] {
   const last = s.last
+  // What it judges, first: a page (screenshotted each round) and Claude's own pictures.
+  const looks: (string | [string, string])[] = [
+    s.head.targets?.length ? [`${pagePath(s.head)} · desktop + phone shots`, YOU] : '',
+    last.images?.some(x => !(last.shots ?? []).some(y => y.path === x)) ? `${plural((last.images ?? []).filter(x => !(last.shots ?? []).some(y => y.path === x)).length, "picture")} from Claude` : '',
+  ]
   const found = allFindings(list, s.head.thread).map(x => x.f)
   const open = found.filter(f => f.state === 'open').length
   const fixed = found.filter(f => f.state === 'fixed').length
@@ -7807,6 +7885,7 @@ function councilFacts(list: Consult[], s: CouncilState): (string | [string, stri
   const spent = costWords(threadCost(s.rounds))
   if (WAITING.has(last.status)) {
     return [
+      ...looks,
       last.between ? [`Claude fixed ${last.between.fixed.length}${last.between.declined.length ? ` · declined ${last.between.declined.length}` : ''}`, CLAUDE] : '',
       last.files.length ? `${plural(last.files.length, 'file')} read` : '',
       `Codex ${codexName(last.model)}`,
@@ -7814,10 +7893,11 @@ function councilFacts(list: Consult[], s: CouncilState): (string | [string, stri
     ]
   }
   if (s.phase === 'passed' || s.phase === 'ended') {
-    return [plural(s.board.filter(m => m.revealed).length, 'round'), fixed ? `${fixed} fixed` : '', declined ? `${declined} declined` : '', parked ? [`${parked} parked for later`, VIOLET] : '', span(Math.max(1, Math.round(((last.finishedAt ?? Date.now()) - s.head.createdAt) / 1000))), spent]
+    return [...looks.slice(0, 1), plural(s.board.filter(m => m.revealed).length, 'round'), fixed ? `${fixed} fixed` : '', declined ? `${declined} declined` : '', parked ? [`${parked} parked for later`, VIOLET] : '', span(Math.max(1, Math.round(((last.finishedAt ?? Date.now()) - s.head.createdAt) / 1000))), spent]
   }
   const gaps = s.revealed ? [last.seat?.gap, last.gap].filter(Boolean).length : 0
   return [
+    ...looks.slice(0, 1),
     open ? [`${plural(open, 'finding')} open`, WARN] : s.revealed ? 'no findings open' : '',
     fixed ? `${fixed} fixed` : '',
     parked ? [`${parked} parked`, VIOLET] : '',
@@ -7950,7 +8030,53 @@ async function endFromPane($: Engine, thread: string) {
 }
 
 /** One round of a council in the pane: what Claude did before it, both seats' scores and findings, sealed until both are in. */
-function CouncilRound($: Engine, el: Elements, list: Consult[], s: CouncilState, c: Consult, i: number, v: View, at: number, columns: number | undefined) {
+/** What a council round looked at: the page's screenshots as tiles, Claude's own pictures beside them. */
+async function CouncilShots($: Engine, el: Elements, surface: string, c: Consult) {
+  const shots = c.shots ?? []
+  const own = (c.images ?? []).filter(x => !shots.some(y => y.path === x))
+  if (!shots.length && !own.length) return null
+  const { Box, Button, Svg, Text } = el
+  const tiles: unknown[] = []
+  for (const shot of shots) {
+    const phone = /phone/.test(shot.label)
+    const tileW = phone ? 56 : 132
+    const tileH = phone ? 120 : 83
+    const data = shot.thumb ? await readThumb($, shot.thumb) : undefined
+    tiles.push(
+      <Box key={`council-shot-${c.id}-${shot.label}`} flexDirection="column" alignItems="flex-start">
+        {surface !== 'terminal' && Svg && data ? <Svg source={photoSvg(data, tileW, tileH)} alt={shot.label} width={tileW} height={tileH} /> : null}
+        <Button key={`council-shot-open-${c.id}-${shot.label}`} plain dimColor label={`↗ ${shot.label}`} onPress={() => openFile($, shot.path)} />
+      </Box>,
+    )
+  }
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      {Label(el, 'What both seats looked at')}
+      {tiles.length > 0 && (
+        <Box flexDirection="row" gap={2} flexWrap="wrap" alignItems="flex-end">
+          {tiles as any}
+        </Box>
+      )}
+      {own.length > 0 && (
+        <Box flexDirection="row" gap={1} flexWrap="wrap" alignItems="center">
+          <Text color={CLAUDE}>Claude's own:</Text>
+          {own.map(path => (
+            <Button key={`council-own-${c.id}-${fileName(path)}`} plain dimColor label={`↗ ${fileName(path)}`} onPress={() => openFile($, path)} />
+          ))}
+        </Box>
+      )}
+    </Box>
+  )
+}
+
+/** Each round's pictures, drawn ahead (they read thumbnails), for the council's page. */
+async function councilShotRows($: Engine, el: Elements, surface: string, s: CouncilState) {
+  const rows: Record<string, unknown> = {}
+  for (const r of s.rounds) rows[r.id] = await CouncilShots($, el, surface, r)
+  return rows
+}
+
+function CouncilRound($: Engine, el: Elements, list: Consult[], s: CouncilState, c: Consult, i: number, v: View, at: number, columns: number | undefined, shots?: unknown) {
   const { Box, Text, Button } = el
   const mark = s.board[i] as CouncilMark
   const live = WAITING.has(c.status)
@@ -7997,10 +8123,12 @@ function CouncilRound($: Engine, el: Elements, list: Consult[], s: CouncilState,
       )}
       {live && (
         <Box flexDirection="column" paddingLeft={1}>
+          {c.note && !c.steps.length && <Text dimColor>{c.note}</Text>}
           {PlanList(el, c)}
           {RUNNING.has(c.status) && Activity(el, c, 8, at)}
         </Box>
       )}
+      {shots && <Box paddingLeft={1}>{shots as any}</Box>}
       {c.seat && (
         <Box flexDirection="column" paddingLeft={1} marginTop={1}>
           {Said(el, CLAUDE, `council-seat-${c.id}`, [
@@ -8042,7 +8170,7 @@ function CouncilRound($: Engine, el: Elements, list: Consult[], s: CouncilState,
 }
 
 /** A council's page in the pane: the board, the brief and the bar, the person's moves, each round (newest first) and the parked ideas. */
-function CouncilDetail($: Engine, el: Elements, surface: string, columns: number | undefined, list: Consult[], s: CouncilState, v: View, at: number) {
+function CouncilDetail($: Engine, el: Elements, surface: string, columns: number | undefined, list: Consult[], s: CouncilState, v: View, at: number, shots: Record<string, unknown> = {}) {
   const { Box, Text, Button, Markdown } = el
   const thread = s.head.thread
   const parked = councilParked(s)
@@ -8100,7 +8228,7 @@ function CouncilDetail($: Engine, el: Elements, surface: string, columns: number
           ))}
         </Box>
       )}
-      {[...s.rounds].reverse().map(c => CouncilRound($, el, list, s, c, s.rounds.indexOf(c), v, at, columns))}
+      {[...s.rounds].reverse().map(c => CouncilRound($, el, list, s, c, s.rounds.indexOf(c), v, at, columns, shots[c.id]))}
     </Box>
   )
 }
@@ -8178,9 +8306,11 @@ export async function councilCard($: Engine, e: any, next: (e: any) => Promise<a
       </Box>
     )
   }
+  const looked = await CouncilShots($, el, e.surface, c)
   return (
     <Box flexDirection="column">
       {CouncilBoardView(el, e.surface, list, s, e.viewport?.columns, `card:${c.id}`, at)}
+      {looked && <Box paddingLeft={1}>{looked as any}</Box>}
       <Box flexDirection="column" paddingLeft={1} marginTop={1}>
         {Speaker(el, c.from === 'claude' ? 'claude' : 'user', 'codex', `${i === 0 ? `Council · bar ${s.target}/10 · up to ${plural(s.spec.rounds, 'round')}` : `Council round ${i + 1}`} · ${c.thread}`)}
         <Box paddingLeft={2}>
@@ -11171,10 +11301,16 @@ const COUNCIL_SCOPES: Record<string, { label: string; words: string }> = {
   uncommitted: { label: 'Uncommitted changes', words: 'my uncommitted changes' },
   session: { label: 'What Claude changed in this chat', words: 'what you changed in this chat' },
   branch: { label: 'This branch against main', words: 'this branch against main' },
+  page: { label: 'A page (screenshots each round)', words: 'a page' },
 }
+
+/** The council's text box asks for the page first when it judges one. */
+const COUNCIL_PAGE_INPUT = 'The page URL (then, optionally, how it was), and what it sets out to do: http://localhost:3000/pricing …'
 
 /** The council's scope, picked in its confirm step: what it covers now, worked out again. */
 async function councilScope($: Engine, pending: Pending, scopeName: string): Promise<Pending> {
+  // A page needs no diff: it is screenshotted afresh for every round, with the code behind it read as needed.
+  if (scopeName === 'page') return { ...pending, scope: 'page', what: 'Desktop and phone screenshots, fresh each round, for both seats', empty: undefined }
   const files = scopeName === 'session' ? await sessionFiles($) : []
   const scope = await describeScope($, scopeName, 'main', 'HEAD', files)
   const empty =
@@ -11232,6 +11368,10 @@ async function confirmStart($: Engine, pending: Pending, typed: string) {
     $.ui.toast('Type it in the box first')
     return
   }
+  if (pending.choice === 'council' && pending.scope === 'page' && !visualTargets(text).length) {
+    $.ui.toast('Give the page URL first, e.g. http://localhost:3000/pricing')
+    return
+  }
   await setView($, { start: '', draft: '' })
   if (pending.choice === 'changes' || pending.choice === 'session' || pending.choice === 'branch') await userStart($, 'review', '', { scope: pending.scope })
   else if (pending.choice === 'plan') await userPlanReview($, '')
@@ -11264,6 +11404,15 @@ async function confirmStart($: Engine, pending: Pending, typed: string) {
     const target = pending.target ?? COUNCIL_TARGET
     const rounds = pending.rounds ?? COUNCIL_ROUNDS
     const scope = pending.scope ?? 'uncommitted'
+    if (scope === 'page') {
+      const [page, before] = visualTargets(text)
+      const brief = text.replace(/\bhttps?:\/\/[^\s"'<>]+/g, '').replace(/\s+/g, ' ').trim()
+      await askClaude(
+        $,
+        `Convene a council on how ${page?.url} looks and works (I started it from the Claudex pane)${before ? `, against how it was at ${before.url}` : ''}: you and Codex each score it out of 10 until both reach ${target}, up to ${plural(rounds, 'round')}.${brief ? `\n\nWhat it set out to do: ${brief}` : ' Take what it set out to do from our conversation.'}\n\nClaudex screenshots the page at desktop and phone size every round, for both of you. If a view or state matters that a plain page load won't show (a menu open, a signed-in page, an error), screenshot it yourself and pass it in images. Start it with ${COUNCIL} (action "start", url: "${page?.url}"${before ? `, before_url: "${before.url}"` : ''}, target: ${target}, rounds: ${rounds}).`,
+      )
+      return
+    }
     await askClaude(
       $,
       `Convene a council on ${COUNCIL_SCOPES[scope]?.words ?? 'the changes'} (I started it from the Claudex pane): you and Codex each score it out of 10 until both reach ${target}, up to ${plural(rounds, 'round')}.${text ? `\n\nWhat it set out to do: ${text}` : ' Take what it set out to do from our conversation.'}\n\nFirst fix anything you already know is wrong and run the checks. Then start it with ${COUNCIL} (action "start", target: ${target}, rounds: ${rounds}, scope: "${scope}").`,
@@ -11508,8 +11657,8 @@ function StartPanel($: Engine, el: Elements, list: Consult[], pending: Pending, 
       {spec.input && Input && (
         <Box flexDirection="column" width="100%">
           <Input
-            key={`confirm-input-${pending.choice}`}
-            placeholder={spec.input}
+            key={`confirm-input-${pending.choice}${pending.choice === 'council' && pending.scope === 'page' ? '-page' : ''}`}
+            placeholder={pending.choice === 'council' && pending.scope === 'page' ? COUNCIL_PAGE_INPUT : spec.input}
             submitLabel={spec.button.toLowerCase()}
             autoFocus
             onInput={(value: string) => void setView($, { draft: value })}
@@ -11602,6 +11751,7 @@ function StartPanel($: Engine, el: Elements, list: Consult[], pending: Pending, 
               <Text dimColor>then Claude asks you before more</Text>
             </Box>,
           )}
+        {pending.choice === 'council' && pending.scope === 'page' && row('Needs', 'your dev server running, and Playwright in this project (npm i -D playwright) with Chrome or Edge')}
         {pending.choice === 'council' && row('Between', 'Claude fixes what is in scope and runs the checks. Ideas beyond the brief are parked, not taken on.')}
         {pending.choice === 'council' && row('Ends', 'when both reach the bar. Out of rounds, or if the scores stall, Claude asks you first.')}
         {looping &&
@@ -11782,7 +11932,7 @@ export function threadMarkdown(list: Consult[], thread: string) {
 function ConversationDetail($: Engine, el: Elements, surface: string, columns: number | undefined, list: Consult[], thread: string, v: any, at: number, shots?: unknown) {
   const { Box, Text, Button, Markdown, Input, Code } = el
   const council = councilState(list, thread)
-  if (council) return CouncilDetail($, el, surface, columns, list, council, v, at)
+  if (council) return CouncilDetail($, el, surface, columns, list, council, v, at, (shots ?? {}) as Record<string, unknown>)
   const rounds = threadOf(list, thread)
   const head = rounds[0] as Consult
   const last = rounds[rounds.length - 1] as Consult
@@ -12404,7 +12554,8 @@ async function drawPane($: Engine, e: any) {
 
   // An open conversation or task fills the pane, unless something is being started.
   if (!pending && v.thread && v.tab !== 'images' && threadOf(list, v.thread).length) {
-    const shots = await ShotsRow($, el, e.surface, threadOf(list, v.thread)[0])
+    const council = councilState(list, v.thread)
+    const shots = council ? await councilShotRows($, el, e.surface, council) : await ShotsRow($, el, e.surface, threadOf(list, v.thread)[0])
     return ConversationDetail($, el, e.surface, columns, list, v.thread, v, at, shots)
   }
   if (!pending && v.tab === 'images' && (v.image || v.viewing)) {
@@ -12944,6 +13095,7 @@ export const register: Register = (on, options) => {
         `- action "start" (target: the user's bar, default ${COUNCIL_TARGET}; rounds: the most it sits, default ${COUNCIL_ROUNDS}): Codex scores round 1 while you take your seat, reviewing on your own (best in a fresh read-only subagent, so you are not scoring your own work). Hand your seat in with action "score". Codex's score stays sealed from you until yours is in; then both are revealed together and the user sees the scoreboard.\n` +
         '- Below the bar: check both seats\' findings against the code, fix the in-scope ones you agree with, run the checks, then action "next" with what you fixed and declined. Codex scores again with its context; you take your seat again.\n' +
         '- It stops when every seat reaches the bar, at the round limit (ask the user before more: go_ahead), or when the scores stall (check in first). action "end" closes it early, with why.\n' +
+        '- A UI or a page: pass url (and before_url to compare), and Claudex screenshots it at desktop and phone size every round for both seats; pass images for your own screenshots of what a page load won\'t show. Both work without code changes to review yet.\n' +
         '- Keep the scope where it is: ideas beyond the brief go in parked, never into fixes during the council. The result ends with a "Council review" scoreboard: put it in the pull request description when the work ends in one.\n\n' +
         "Each round is one Codex run on the user's Codex quota; the user watches it live.",
       inputSchema: {
@@ -12964,8 +13116,19 @@ export const register: Register = (on, options) => {
           base: { type: 'string', description: 'start: base branch for scope "branch". Default main.' },
           commit: { type: 'string', description: 'start: commit for scope "commit".' },
           files: { type: 'array', items: { type: 'string' }, description: 'start: files to look at first (repo-relative).' },
+          url: {
+            type: 'string',
+            description: 'start, for a UI or a page: the page to judge (e.g. http://localhost:3000/pricing). Claudex screenshots it at desktop and phone size every round, fresh, for both seats; the dev server must be running.',
+          },
+          before_url: { type: 'string', description: 'start, with url: the same page as it was (the live site, say), screenshotted beside it to compare.' },
+          images: {
+            type: 'array',
+            items: { type: 'string' },
+            description:
+              "start and next: your own screenshots (paths), sent to Codex with that round: views or states a plain page load won't show (a menu open, a signed-in page, an error, a step in a flow). Take them again for each next round, since the page has changed.",
+          },
           context: { type: 'string', description: 'start: background Codex cannot see: constraints from the user, decisions made.' },
-          lens: { type: 'string', enum: Object.keys(LENSES), description: 'start: what the council looks hardest at. Default: everything.' },
+          lens: { type: 'string', enum: Object.keys(LENSES), description: 'start: what the council looks hardest at. Default: everything; ux for a page or screenshots.' },
           model: { type: 'string', description: "start: Codex model. Default: the user's pick." },
           effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], description: "start: reasoning effort, the same every round. Default: the user's pick." },
           score: { type: 'integer', minimum: 0, maximum: 10, description: "score: your seat's score out of 10, on the council's scale." },
@@ -13350,6 +13513,9 @@ export const register: Register = (on, options) => {
       declined?: { finding?: string; reason?: string }[]
       changes?: string
       checks?: string
+      url?: string
+      before_url?: string
+      images?: string[]
       go_ahead?: boolean
       reason?: string
     }
@@ -13392,6 +13558,11 @@ export const register: Register = (on, options) => {
     }
     const stop = await guard($, a.go_ahead === true)
     if (stop) return { deny: stop }
+    // Claude's own screenshots, for the round this call starts.
+    const pictures = (Array.isArray(a.images) ? a.images : []).map(String).map(resolvePath)
+    for (const pic of pictures) {
+      if (!(await $.fs.exists(pic))) return { deny: `Picture not found: ${pic}` }
+    }
     if (action === 'next') {
       try {
         const started = await nextCouncilRound($, id, {
@@ -13399,6 +13570,7 @@ export const register: Register = (on, options) => {
           declined: (Array.isArray(a.declined) ? a.declined : []).map(d => ({ id: String(d?.finding ?? ''), reason: String(d?.reason ?? '') })),
           changes: a.changes,
           checks: a.checks,
+          images: pictures,
           goAhead: a.go_ahead === true,
           from: 'claude',
           toolUseId: e.tool_use_id,
@@ -13406,7 +13578,7 @@ export const register: Register = (on, options) => {
         })
         launch($, started.consult.id, started.prompt)
         const s = councilState(await all($), id) as CouncilState
-        return { result: `Round ${s.n} of ${s.max} of council ${id} has started: Codex is scoring the work again, with its context, and the user watches the scoreboard. ${seatWords(id, s.target)}` }
+        return { result: `Round ${s.n} of ${s.max} of council ${id} has started: Codex is scoring the work again, with its context, and the user watches the scoreboard. ${seatWords(id, s.target, s.last)}` }
       } catch (err) {
         return { deny: message(err) }
       }
@@ -13416,17 +13588,24 @@ export const register: Register = (on, options) => {
     if (!request) return { deny: 'Say what the council reviews (request), and what the work set out to do.' }
     const p = await read($, prefs)
     const given = (Array.isArray(a.files) ? a.files : []).map(String)
+    const targets = visualTargets(`${a.url ?? ''} ${a.before_url ?? ''}`)
+    if (a.url?.trim() && !targets.length) return { deny: `url must be a web address (http:// or https://), like http://localhost:3000/pricing.` }
+    // A page or screenshots can be judged before any code changes: then there is no diff to look at, only the page.
+    const visual = targets.length > 0 || pictures.length > 0
     const scopeName = a.scope ?? (given.length ? 'files' : 'uncommitted')
     const files = scopeName === 'session' ? await sessionFiles($) : given
-    const scope = await describeScope($, scopeName, a.base?.trim() || 'main', a.commit?.trim() || 'HEAD', files)
-    if (scopeName === 'uncommitted' && /^no changes/.test(scope?.diffstat ?? '')) return { deny: 'There are no uncommitted changes for the council to look at. Pick another scope (session, branch, commit or files).' }
+    let scope = await describeScope($, scopeName, a.base?.trim() || 'main', a.commit?.trim() || 'HEAD', files)
+    if (scopeName === 'uncommitted' && /^no changes/.test(scope?.diffstat ?? '')) {
+      if (!visual) return { deny: 'There are no uncommitted changes for the council to look at. Pick another scope (session, branch, commit or files), or give it a page (url) or screenshots (images) to judge.' }
+      scope = undefined
+    }
     const size = diffSize(scope?.diffstat)
     if (!a.go_ahead && (size.files > 40 || size.lines > 4000)) {
       return { deny: `That is a big change (${scope?.diffstat}): every council round would take long and use a lot of the user's Codex quota. Ask the user whether to go ahead or narrow it (scope files, a commit); if they say go ahead, call again with go_ahead: true.` }
     }
     const target = Number.isFinite(Number(a.target)) ? Math.min(10, Math.max(1, Math.round(Number(a.target)))) : COUNCIL_TARGET
     const rounds = Number.isFinite(Number(a.rounds)) ? Math.min(10, Math.max(1, Math.round(Number(a.rounds)))) : COUNCIL_ROUNDS
-    const lens = a.lens && a.lens in LENSES && a.lens !== 'general' ? (a.lens as Lens) : undefined
+    const lens = a.lens && a.lens in LENSES ? (a.lens === 'general' ? undefined : (a.lens as Lens)) : visual ? 'ux' : undefined
     let started: { consult: Consult; prompt: string }
     try {
       started = await startFirst($, {
@@ -13442,6 +13621,8 @@ export const register: Register = (on, options) => {
         model: a.model?.trim() || p.model,
         effort: a.effort?.trim() || p.effort,
         background: true,
+        images: pictures,
+        targets,
         council: { target, rounds, brief: a.brief?.trim() || request },
       })
     } catch (err) {
@@ -13450,7 +13631,7 @@ export const register: Register = (on, options) => {
     const { consult, prompt } = started
     launch($, consult.id, prompt)
     return {
-      result: `Council ${consult.thread} sits: you and Codex (${consult.model}, ${consult.effort} reasoning), up to ${plural(rounds, 'round')}, bar ${target}/10. Codex is scoring round 1 now; its score stays sealed until yours is in, and the user watches the scoreboard. Tell the user in a line, then: ${seatWords(consult.thread, target)}`,
+      result: `Council ${consult.thread} sits: you and Codex (${consult.model}, ${consult.effort} reasoning), up to ${plural(rounds, 'round')}, bar ${target}/10. Codex is scoring round 1 now; its score stays sealed until yours is in, and the user watches the scoreboard. Tell the user in a line, then: ${seatWords(consult.thread, target, consult)}`,
     }
   })
 

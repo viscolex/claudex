@@ -4,7 +4,7 @@ Claude and Codex, working together from Claude Code. Claudex brings Codex
 (OpenAI's coding agent, on your own ChatGPT plan) into Claude Code:
 
 - reviews and second opinions, and joint reviews where Claude and Codex compare notes
-- councils: Claude and Codex each score the work out of 10, sealed until both are in, round after round until both reach your bar (Claude fixes what is in scope between rounds)
+- councils: Claude and Codex each score the work out of 10, sealed until both are in, round after round until both reach your bar (Claude fixes what is in scope between rounds); on a page, both judge fresh desktop and phone screenshots every round, plus any Claude takes itself
 - tasks Codex builds in its own copy of the repo, which Claude checks and applies (whole or file by file), with one-click undo
 - build loops where they review each other's work, and bigger jobs Claude splits between them, on one board
 - a two-way line while Codex works: you or Claude send it notes; Codex tells Claude what it finds, and asks when it needs an answer, either waiting for it or carrying on while Claude thinks
@@ -70,7 +70,7 @@ It checks, against your real Codex, that it starts, that you are signed in, your
 
 ## Optional, per project
 
-- **Visual reviews** (screenshots of a page) need Playwright in the project (`npm i -D playwright`), plus Chrome or Edge.
+- **Visual reviews and councils on a page** (screenshots of it) need Playwright in the project (`npm i -D playwright`), plus Chrome or Edge, and the dev server running.
 - **WebP copies of pictures** need `sharp` in the project. Most web projects have it already. Cut-outs need nothing extra: Codex paints them transparent, or the mod keys out the magenta itself.
 
 ## Where things live

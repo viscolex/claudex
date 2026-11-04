@@ -2439,3 +2439,84 @@ test('a council stalls only when the lower score rose in none of the last two ro
   expect(councilState(council([6, 6, 6], 3), 'K')?.phase).toBe('limit')
   expect(councilState(council([7, 9]), 'K')?.phase).toBe('passed')
 })
+
+test('a council on a page: every round screenshots it afresh for both seats, with Claude\'s own pictures beside them', { timeoutMs: 30_000 }, async ($, on) => {
+  const w = world(on)
+  await $.session.start({ cwd: 'C:\\repo', surface: 'desktop', isInteractive: true } as never)
+  w.files.set('C:\\repo\\menu-open.png', { text: 'png', mtimeMs: 1 })
+  w.files.set('C:\\repo\\menu-fixed.png', { text: 'png', mtimeMs: 2 })
+  expect(said(await $.tool.call({ tool: COUNCIL, action: 'start', request: 'The pricing page.', url: 'pricing' } as never))).toContain('url must be a web address')
+  const started = said(
+    await $.tool.call({
+      tool: COUNCIL,
+      tool_use_id: 'tu-page',
+      action: 'start',
+      request: 'The pricing page should make the plans easy to compare on a phone.',
+      url: 'http://localhost:3000/pricing',
+      before_url: 'https://example.com/pricing',
+      images: ['C:\\repo\\menu-open.png'],
+    } as never),
+  )
+  expect(started).toContain('Claudex is screenshotting http://localhost:3000/pricing at desktop and phone size for this round')
+  const id = started.match(/Council (\w{4}) sits/)?.[1] as string
+  await w.clock.settle()
+  const captures = () => w.runs.filter(a => String(a[1] ?? '').endsWith('capture.mjs'))
+  expect(captures().length).toBe(1)
+  expect(captures()[0]?.join(' ')).toContain('after=http://localhost:3000/pricing before=https://example.com/pricing')
+  // Codex gets the screenshots and Claude's own picture, on the UX lens, judged as a person sees the page.
+  const first = w.spawns.find(a => a.some(x => x.endsWith('council.schema.json'))) as readonly string[]
+  const pictures = first[first.indexOf('-Images') + 1] as string
+  expect(pictures).toContain('after-desktop.png')
+  expect(pictures).toContain('menu-open.png')
+  const prompt = w.inputs.at(-1) as string
+  expect(prompt).toContain('Screenshots of the page (http://localhost:3000/pricing) are attached')
+  expect(prompt).toContain('before-desktop and before-phone show how it was (https://example.com/pricing)')
+  expect(prompt).toContain("Claude's own screenshots are attached too (menu-open.png)")
+  expect(prompt).toContain('Judge it as a person sees and uses it')
+  expect(prompt).toContain('Look hardest at the experience')
+
+  // Codex is done: Claude is told where the screenshots are, for its own seat.
+  w.gates.review?.open()
+  await w.clock.settle()
+  await w.clock.advance(1500)
+  expect(w.told.some(t => t.includes("this round's screenshots are C:\\shots\\after-desktop.png"))).toBe(true)
+  const reveal = said(await $.tool.call({ tool: COUNCIL, action: 'score', council: id, score: 7, summary: 'The plans stack badly on a phone.' } as never))
+  expect(reveal).toContain('What both seats looked at this round: C:\\shots\\after-desktop.png')
+  expect(reveal).toContain('C:\\repo\\menu-open.png')
+
+  // The next round screenshots the page again, and takes Claude's new picture instead of the old one.
+  await $.tool.call({ tool: COUNCIL, action: 'next', council: id, fixed: ['F1'], images: ['C:\\repo\\menu-fixed.png'] } as never)
+  await w.clock.settle()
+  expect(captures().length).toBe(2)
+  const second = w.spawns.filter(a => a.some(x => x.endsWith('council.schema.json'))).at(-1) as readonly string[]
+  const again = second[second.indexOf('-Images') + 1] as string
+  expect(again).toContain('menu-fixed.png')
+  expect(again).not.toContain('menu-open.png')
+  expect(w.inputs.at(-1)).toContain('Fresh screenshots of the page as it is now')
+
+  // The pane's page shows what each round looked at.
+  const pane = await $.ui.mount({ plugin: 'claudex', surface: 'terminal', ...PANE })
+  await pane.press({ key: `thread-open-${id}` })
+  expect(await pane.find({ type: 'Text', text: /WHAT BOTH SEATS LOOKED AT/ })).toBeDefined()
+  expect(await pane.find({ type: 'Button', label: /menu-fixed\.png/ })).toBeDefined()
+  await pane.unmount()
+})
+
+test('the pane convenes a council on a page: its address goes to Claude with the bar, and asks for one first', { timeoutMs: 30_000 }, async ($, on) => {
+  const w = world(on)
+  await $.session.start({ cwd: 'C:\\repo', surface: 'desktop', isInteractive: true } as never)
+  const pane = await $.ui.mount({ plugin: 'claudex', surface: 'desktop', ...PANE })
+  await pane.press({ key: 'new-New' })
+  await pane.press({ key: 'start-pick-council' })
+  await pane.select({ key: 'confirm-council-scope', value: 'page' })
+  expect(await pane.find({ type: 'Text', text: /Playwright in this project/ })).toBeDefined()
+  const before = w.told.length
+  await pane.press({ key: 'confirm-go' })
+  expect(w.told.length).toBe(before)
+  await pane.input({ key: 'confirm-input-council-page', text: 'http://localhost:3000/pricing Plans easy to compare on a phone.' })
+  expect(w.told.at(-1)).toContain('Convene a council on how http://localhost:3000/pricing looks and works')
+  expect(w.told.at(-1)).toContain('What it set out to do: Plans easy to compare on a phone.')
+  expect(w.told.at(-1)).toContain('action "start", url: "http://localhost:3000/pricing", target: 9, rounds: 5')
+  expect(w.spawns.length).toBe(0)
+  await pane.unmount()
+})
