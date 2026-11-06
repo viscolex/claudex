@@ -1,6 +1,6 @@
 {
   "name": "claudex",
-  "version": "2.8.0",
+  "version": "2.8.1",
   "description": "Claudex: Claude and Codex, working together from Claude Code. Reviews and second opinions, councils that score the work until it is ready, tasks in their own worktree, and pictures, with live cards in the chat and one Claudex pane.",
   "author": {
     "name": "Andrej Safranovic"

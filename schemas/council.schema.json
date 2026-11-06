@@ -2,7 +2,8 @@
   "type": "object",
   "properties": {
     "score": {
-      "type": "integer"
+      "type": "number",
+      "description": "Out of 10, to one decimal place, like 8.8."
     },
     "summary": {
       "type": "string"

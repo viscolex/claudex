@@ -38,6 +38,12 @@ export type CouncilBoard = {
 
 const n1 = (v: number) => v.toFixed(1)
 
+/** A score as every surface writes it: to one decimal place, so 7.0 sits beside 8.8. Ten stays 10: nothing lies above it. */
+export function scoreText(score: number | undefined) {
+  if (typeof score !== 'number') return '?'
+  return score >= 10 ? '10' : score.toFixed(1)
+}
+
 /** A score in its colour against the bar: through it, one short, or further off. */
 export function scoreColour(score: number, target: number) {
   return score >= target ? D.good : score >= target - 1 ? D.warn : D.bad
@@ -97,7 +103,7 @@ function barPill(right: number, y: number, target: number, passed: boolean) {
  * in its colour against the bar, a tick on it once it clears the bar.
  */
 function paddle(cx: number, cy: number, seat: CouncilSeatView, colour: string, target: number, side: 'left' | 'right', id: string, flip: number, live: boolean) {
-  const w = 42
+  const w = 46
   const h = 46
   const x = -w / 2
   const y = -h / 2
@@ -126,7 +132,7 @@ function paddle(cx: number, cy: number, seat: CouncilSeatView, colour: string, t
     const front =
       `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="8" fill="#1b1b26" stroke="${sc}" stroke-width="1.8"/>` +
       `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="8" fill="${sc}" fill-opacity=".1"/>` +
-      `<text y="9.5" text-anchor="middle" font-size="27" font-weight="850" letter-spacing="-.5" fill="${sc}">${score}</text>` +
+      `<text y="8.5" text-anchor="middle" font-size="24" font-weight="850" letter-spacing="-.6" fill="${sc}">${scoreText(score)}</text>` +
       (score >= target ? `<g transform="translate(${w / 2 - 2} ${y + 2})"><circle r="7" fill="${D.good}"/><path d="M-3.2 .2l2.1 2.1 4-4.2" fill="none" stroke="${D.ground}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></g>` : '')
     // The flip: the back narrows to an edge, the front opens out of it and lands with a bounce.
     face =
@@ -150,7 +156,7 @@ function climb(b: CouncilBoard, cx0: number, cx1: number, top: number, base: num
   // The scale runs from a little under the lowest score (and well under the bar) to 10: scores live high, and a
   // scale from 0 would press them flat against the top.
   const seen = b.marks.filter(m => m.revealed).flatMap(m => [m.claude, m.codex]).filter((v): v is number => typeof v === 'number')
-  const lo = Math.max(0, Math.min(b.target - 4, ...seen.map(v => v - 1)))
+  const lo = Math.floor(Math.max(0, Math.min(b.target - 4, ...seen.map(v => v - 1))))
   const yOf = (s: number) => base - ((Math.max(lo, s) - lo) / (10 - lo)) * (base - top)
   let out = ''
   // The columns: rounds sat, the one under way, the ones still to come.
@@ -174,7 +180,7 @@ function climb(b: CouncilBoard, cx0: number, cx1: number, top: number, base: num
   // The scale's two ends, small, at the chart's left.
   const by = yOf(b.target)
   // The bar's own value sits on the scale, in its colour, clear of the newest scores (they land at the right).
-  if (b.target < 10) out += `<text x="${n1(cx0 - 5)}" y="${n1(yOf(10) + 3)}" text-anchor="end" font-size="8.5" font-weight="700" fill="#fff" fill-opacity=".3">10</text>`
+  if (by - yOf(10) >= 10) out += `<text x="${n1(cx0 - 5)}" y="${n1(yOf(10) + 3)}" text-anchor="end" font-size="8.5" font-weight="700" fill="#fff" fill-opacity=".3">10</text>`
   out += `<text x="${n1(cx0 - 5)}" y="${n1(base + 3)}" text-anchor="end" font-size="8.5" font-weight="700" fill="#fff" fill-opacity=".3">${lo}</text>`
   out += `<text x="${n1(cx0 - 5)}" y="${n1(by + 3.5)}" text-anchor="end" font-size="10" font-weight="850" fill="${passed ? D.good : D.you}">${b.target}</text>`
   if (passed) {
@@ -184,7 +190,8 @@ function climb(b: CouncilBoard, cx0: number, cx1: number, top: number, base: num
     out += `<path d="M${n1(cx0)} ${n1(by)}H${n1(cx1)}" stroke="${D.you}" stroke-width="1.3" stroke-dasharray="5 4" stroke-opacity=".85"/>`
   }
 
-  // Each seat's line. Two equal scores sit side by side rather than one on the other.
+  // Each seat's line. Two scores too close to tell apart sit side by side rather than one on the other.
+  const touching = (m: CouncilMarkView) => typeof m.claude === 'number' && typeof m.codex === 'number' && Math.abs(yOf(m.claude) - yOf(m.codex)) < 8
   const shown = b.marks.filter(m => m.revealed).sort((a, c) => a.round - c.round)
   const latest = shown[shown.length - 1]
   const fresh = latest && latest.round === b.n
@@ -193,8 +200,7 @@ function climb(b: CouncilBoard, cx0: number, cx1: number, top: number, base: num
     const pts = shown
       .filter(m => typeof m[seat] === 'number')
       .map(m => {
-        const same = m.claude === m.codex
-        return { r: m.round, x: xOf(m.round) + (same ? (seat === 'claude' ? -3.5 : 3.5) : 0), y: yOf(m[seat] as number), score: m[seat] as number }
+        return { r: m.round, x: xOf(m.round) + (touching(m) ? (seat === 'claude' ? -3.5 : 3.5) : 0), y: yOf(m[seat] as number), score: m[seat] as number }
       })
     if (!pts.length) continue
     const settledPts = fresh ? pts.slice(0, -1) : pts
@@ -211,7 +217,7 @@ function climb(b: CouncilBoard, cx0: number, cx1: number, top: number, base: num
     const lx = last.x + (typeof other === 'number' && other === last.score ? (seat === 'claude' ? -5 : 5) : 0)
     const ly = above ? last.y - 8 : last.y + 15
     const anchor = typeof other === 'number' && other === last.score ? (seat === 'claude' ? 'end' : 'start') : 'middle'
-    const label = `<text x="${n1(lx)}" y="${n1(ly)}" text-anchor="${anchor}" font-size="10.5" font-weight="800" fill="${colour}">${last.score}</text>`
+    const label = `<text x="${n1(lx)}" y="${n1(ly)}" text-anchor="${anchor}" font-size="10.5" font-weight="800" fill="${colour}" stroke="${D.ground}" stroke-width="3" stroke-linejoin="round" paint-order="stroke">${scoreText(last.score)}</text>`
     for (const p of pts) {
       const newest = p === last
       const dot = `<circle r="${newest ? 4.4 : 3.2}" fill="${newest ? colour : D.ground}" stroke="${colour}" stroke-width="1.6"/>`
@@ -309,8 +315,8 @@ export function councilBoardSvg(b: CouncilBoard, width_: number) {
   bench += paddle(pl, py, b.claude, D.claude, b.target, 'left', id, reveal, b.live)
   // Both flip at once: neither score is seen before the other.
   bench += paddle(pr, py, b.codex, D.codex, b.target, 'right', id, reveal, b.live)
-  const cx0 = pl + 40
-  const cx1 = pr - 40
+  const cx0 = pl + 42
+  const cx1 = pr - 42
   if (cx1 - cx0 >= 70) bench += climb(b, cx0, cx1, 112, floor - 28, id, reveal + 0.75)
 
 
@@ -326,11 +332,11 @@ ${line3}
 
 /** A council in one small mark, for list rows: the two latest scores over the bar. */
 export function councilChipSvg(o: { claude?: number; codex?: number; target: number; passed: boolean }, size = 22) {
-  const W = Math.round(size * 2.2)
+  const W = Math.round(size * 2.9)
   const H = size
   const half = (score: number | undefined, x: number, colour: string) => {
     const sc = typeof score === 'number' ? scoreColour(score, o.target) : '#8b8b98'
-    return `<rect x="${x}" y="1" width="${n1(W / 2 - 2)}" height="${H - 2}" rx="${n1((H - 2) / 2.6)}" fill="${colour}" fill-opacity=".14" stroke="${colour}" stroke-opacity=".6"/><text x="${n1(x + (W / 2 - 2) / 2)}" y="${n1(H / 2 + size * 0.2)}" text-anchor="middle" font-size="${n1(size * 0.55)}" font-weight="850" fill="${sc}" font-family="${MONO}">${typeof score === 'number' ? score : '·'}</text>`
+    return `<rect x="${x}" y="1" width="${n1(W / 2 - 2)}" height="${H - 2}" rx="${n1((H - 2) / 2.6)}" fill="${colour}" fill-opacity=".14" stroke="${colour}" stroke-opacity=".6"/><text x="${n1(x + (W / 2 - 2) / 2)}" y="${n1(H / 2 + size * 0.2)}" text-anchor="middle" font-size="${n1(size * 0.55)}" font-weight="850" fill="${sc}" font-family="${MONO}">${typeof score === 'number' ? scoreText(score) : '·'}</text>`
   }
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="${SANS}">${half(o.claude, 0.5, D.claude)}${half(o.codex, W / 2 + 1.5, D.codex)}${o.passed ? `<circle cx="${W - 3}" cy="3.5" r="3.5" fill="${D.good}"/>` : ''}</svg>`
 }

@@ -187,7 +187,7 @@ export type CodexParked = { title: string; detail?: string }
  * every seat reaches the person's bar. Kept on the council's first round.
  */
 export type CodexCouncil = {
-  /** The score every seat must reach, out of 10. */
+  /** The score every seat must reach, out of 10, to one decimal place at most (9, or 9.5). */
   target: number
   /** The most rounds it sits before it stops and asks; more can be granted. */
   rounds: number
@@ -332,7 +332,7 @@ export type CodexConsult = {
   cost?: { credits: number | null; usd: number | null; at: number }
   /** On a council's first round: the council it sits. */
   council?: CodexCouncil
-  /** A council round: Codex's score out of 10, what keeps it from the bar, and the ideas it parked. */
+  /** A council round: Codex's score out of 10, to one decimal place, what keeps it from the bar, and the ideas it parked. */
   score?: number
   gap?: string
   parked?: CodexParked[]

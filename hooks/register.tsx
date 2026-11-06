@@ -76,7 +76,7 @@ import {
   WARN,
 } from './art'
 import { type Bead, type JourneyStep, type Motion, type RowChip, JOURNEY_HEIGHT, MINI_STAGE, PANE_HERO_HEIGHT, duetCardSvg, duetHeroSvg, jobStripSvg, journeySvg, miniStageSvg, moving, rowChipSvg, usageCardSvg, duetResultSvg, duetRowSvg, paneHeroSvg, wordmarkSvg } from './duet'
-import { COUNCIL_HEIGHT, type CouncilBoard, type CouncilSeatView, councilBoardSvg, councilChipSvg } from './council'
+import { COUNCIL_HEIGHT, type CouncilBoard, type CouncilSeatView, councilBoardSvg, councilChipSvg, scoreText } from './council'
 import type { TileSpec, TilesProps } from './tiles'
 import type { BandHero, BandJob, BandResult, BandRow, Banter, ChipKind, ClawdMood, Family, Gauge, Growing, JobPartState, Mail, PairState, PlanView, Sprite, Stage, SteerView } from './art'
 import { describe, headline } from './parse'
@@ -1510,8 +1510,10 @@ function jobLine(list: Consult[], head: Consult) {
 /** The bar and the most rounds a council sits, unless the person says otherwise. */
 export const COUNCIL_TARGET = 9
 export const COUNCIL_ROUNDS = 5
-/** Rounds without the lower score rising before the council checks in with the person. */
+/** Rounds without the lower score really rising before the council checks in with the person. */
 const COUNCIL_STALL = 2
+/** The least a round must add to the lower score, in tenths, to count as rising: a tenth either way is noise. */
+const COUNCIL_RISE = 2
 
 /** The scale both seats score by: the one place it is said. */
 const COUNCIL_SCALE = [
@@ -1524,10 +1526,20 @@ const COUNCIL_SCALE = [
   '0–2: broken, or the wrong approach.',
 ]
 
-/** A seat's score as a whole number from 0 to 10, whatever came in. */
+/** A score or a bar to one decimal place: the one way a number gets onto the scoreboard, so 8.8 always equals 8.8. */
+export function oneDecimal(n: unknown) {
+  return Math.round(Number(n) * 10) / 10
+}
+
+/** A seat's score from 0 to 10, to one decimal place, whatever came in. */
 export function clampScore(n: unknown) {
-  const v = Math.round(Number(n))
+  const v = oneDecimal(n)
   return Number.isFinite(v) ? Math.min(10, Math.max(0, v)) : 0
+}
+
+/** Both seats' scores, as a line says them. */
+function bothScores(m: { claude?: number; codex?: number }) {
+  return `Claude ${scoreText(m.claude)} · Codex ${scoreText(m.codex)}`
 }
 
 export type CouncilPhase = 'scoring' | 'seat' | 'failed' | 'fixing' | 'limit' | 'stalled' | 'passed' | 'ended'
@@ -1559,7 +1571,7 @@ export function councilState(list: Consult[], thread: string) {
   const running = WAITING.has(last.status)
   const failed = last.status === 'failed' || last.status === 'stopped'
   const atLimit = revealed && !passed && n >= spec.rounds
-  // The lower score has not risen for a while: more of the same may not get there.
+  // The lower score has not really risen for a while: more of the same may not get there.
   const recent = board.slice(Math.max(0, n - 1 - COUNCIL_STALL), n)
   const stalled =
     revealed &&
@@ -1567,7 +1579,7 @@ export function councilState(list: Consult[], thread: string) {
     !atLimit &&
     recent.length === COUNCIL_STALL + 1 &&
     recent.every(m => m.revealed) &&
-    recent.slice(1).every((m, i) => (low(m) ?? 0) <= (low(recent[i]) ?? 0))
+    recent.slice(1).every((m, i) => Math.round(((low(m) ?? 0) - (low(recent[i]) ?? 0)) * 10) < COUNCIL_RISE)
   const phase: CouncilPhase = passed ? 'passed' : spec.ended ? 'ended' : running ? 'scoring' : failed ? 'failed' : !last.seat ? 'seat' : atLimit ? 'limit' : stalled ? 'stalled' : 'fixing'
   // The best of the scores shown so far, for the climb: the lower seat's, round by round.
   const lows = board.map(low)
@@ -1579,21 +1591,22 @@ export type CouncilState = NonNullable<ReturnType<typeof councilState>>
 /** A council round's verdict, from its score against the bar: what the lists and chips colour it by. */
 function councilVerdict(score: number, target: number, findings: number): Verdict {
   if (score >= target) return findings ? 'approve_with_nits' : 'approve'
-  return score <= 4 ? 'rethink' : 'changes_needed'
+  return score < 5 ? 'rethink' : 'changes_needed'
 }
 
 /** The scale and the scope rule, as both seats read them. */
 function councilScale(target: number) {
   return [
-    'Score it out of 10, on this scale:',
+    'Score it out of 10, to one decimal place, on this scale:',
     ...COUNCIL_SCALE.map(line => `- ${line}`),
+    "The scale's numbers are anchors: the decimal says where the work sits between them (8.8 is nearly ready to ship; 8.2 is only just good).",
     `Score against the brief alone, and hold the bar steady from round to round: score the work as it stands, not the progress it made. The bar is ${target}.`,
     'Ideas beyond the brief (features it did not ask for, refactors, polish outside its scope) go in parked: they never lower the score, and nobody takes them on now.',
   ]
 }
 
 const COUNCIL_SCHEMA_LINES = (target: number) => [
-  '- score: a whole number from 0 to 10.',
+  '- score: a number from 0 to 10, to one decimal place, like 8.8.',
   '- summary: your view in two to four sentences.',
   `- gap: what keeps it from ${target}, in one sentence; empty when it reaches ${target}.`,
   '- findings: the in-scope problems that cost it points, most severe first, or empty. detail says what goes wrong and when; suggestion says how to fix it.',
@@ -1774,7 +1787,7 @@ export async function submitSeat(
   const round = now2.find(c => c.id === s.last.id) as Consult
   if (round.status === 'done') return councilText(round, now2)
   if (WAITING.has(round.status)) {
-    return `Your seat for council ${thread}, round ${s.n}, is in: ${clampScore(seat.score)}/10, sealed. Codex is still scoring; the reveal comes as a message once it has. Carry on meanwhile, but change nothing it is looking at.`
+    return `Your seat for council ${thread}, round ${s.n}, is in: ${scoreText(clampScore(seat.score))}/10, sealed. Codex is still scoring; the reveal comes as a message once it has. Carry on meanwhile, but change nothing it is looking at.`
   }
   return `Your seat for council ${thread}, round ${s.n}, is in, but Codex's round ${round.status === 'failed' ? 'failed' : 'was stopped'}${round.error ? ` (${round.error})` : ''}. The user can run it again from its card; the reveal then follows by itself.`
 }
@@ -1783,7 +1796,7 @@ export async function submitSeat(
 export function councilMarkdown(list: Consult[], thread: string) {
   const s = councilState(list, thread)
   if (!s) return ''
-  const cell = (v: number | undefined, sealed: boolean) => (typeof v === 'number' ? `${v}/10` : sealed ? 'sealed' : 'no score')
+  const cell = (v: number | undefined, sealed: boolean) => (typeof v === 'number' ? `${scoreText(v)}/10` : sealed ? 'sealed' : 'no score')
   const shown = s.board.filter(m => m.revealed || m.round === s.n)
   const where2 = s.phase === 'passed' ? 'Passed' : s.phase === 'ended' ? 'Ended early' : s.revealed ? 'Below the bar' : 'In session'
   return [
@@ -1810,7 +1823,7 @@ function seatWords(thread: string, target: number, round?: Consult) {
   return [
     look,
     `Take your seat: review the work on your own against the brief, without reading Codex's findings. Best in a fresh, read-only subagent (the Agent tool) given only the brief and what to look at, so your seat is not scoring work you wrote.`,
-    `Score it out of 10 on the council's scale (10 nothing left worth changing for what it set out to do; 9 ready to ship, small polish at most; 8 good, a few real but minor issues; 7 works but needs fixes before it ships; 5–6 significant problems; 4 or less major problems). The bar is ${target}. Ideas beyond the brief go in parked, not the score.`,
+    `Score it out of 10, to one decimal place (like 8.8), on the council's scale (10 nothing left worth changing for what it set out to do; 9 ready to ship, small polish at most; 8 good, a few real but minor issues; 7 works but needs fixes before it ships; 5–6 significant problems; 4 or less major problems). The bar is ${target}. Ideas beyond the brief go in parked, not the score.`,
     `Hand it in with ${COUNCIL} (action "score", council "${thread}", score, summary, gap, findings, parked).`,
   ]
     .filter(Boolean)
@@ -1837,8 +1850,8 @@ function councilText(c: Consult, list: Consult[]) {
   const lines = [
     `${tag}: the reveal. Bar: ${s.target}/10.`,
     '',
-    `Your seat: ${c.seat.score}/10. ${c.seat.summary}${c.seat.gap ? ` To reach ${s.target}: ${c.seat.gap}` : ''}`,
-    `Codex (${c.model}): ${c.score ?? '?'}/10. ${c.summary ?? ''}${c.gap ? ` To reach ${s.target}: ${c.gap}` : ''}`,
+    `Your seat: ${scoreText(c.seat.score)}/10. ${c.seat.summary}${c.seat.gap ? ` To reach ${s.target}: ${c.seat.gap}` : ''}`,
+    `Codex (${c.model}): ${scoreText(c.score)}/10. ${c.summary ?? ''}${c.gap ? ` To reach ${s.target}: ${c.gap}` : ''}`,
   ]
   if (c.responses.length) {
     const titles = new Map(threadFindings(list, c.thread).map(f => [f.id, f.title]))
@@ -1865,7 +1878,7 @@ function councilText(c: Consult, list: Consult[]) {
     )
   } else if (s.phase === 'stalled') {
     lines.push(
-      `The lower score has not risen in ${plural(COUNCIL_STALL, 'round')}: more of the same may not get there. Before another round, check in with the user: what stands between the work and ${s.target}, and whether that is still within the brief. If they say go on, fix what is in scope and call ${COUNCIL} (action "next", go_ahead: true).`,
+      `The lower score has gained no more than 0.1 a round for ${plural(COUNCIL_STALL, 'round')}: more of the same may not get there. Before another round, check in with the user: what stands between the work and ${s.target}, and whether that is still within the brief. If they say go on, fix what is in scope and call ${COUNCIL} (action "next", go_ahead: true).`,
     )
   } else {
     lines.push(
@@ -1988,7 +2001,7 @@ export async function endCouncil($: Engine, thread: string, by: 'claude' | 'user
 /** The council in a few words, for its row and its card: the scores and where it stands. */
 function councilWords(s: CouncilState) {
   const m = s.board[s.n - 1]
-  const scores = m?.revealed ? `Claude ${m.claude} · Codex ${m.codex}` : ''
+  const scores = m?.revealed ? bothScores(m) : ''
   const round = `round ${s.n} of ${s.max}`
   switch (s.phase) {
     case 'passed':
@@ -2134,8 +2147,8 @@ function timelineOf(list: Consult[], thread: string) {
       steps.push({ who: c.round === 1 ? asker : 'claude', text: `called round ${(council?.rounds.findIndex(r => r.id === c.id) ?? 0) + 1}` })
       if (WAITING.has(c.status)) steps.push({ who: 'codex', text: 'scoring…' })
       else if (c.status === 'failed' || c.status === 'stopped') steps.push({ who: 'codex', text: c.status })
-      else steps.push({ who: 'codex', text: c.seat ? `scored ${c.score}` : 'scored (sealed)' })
-      if (c.seat) steps.push({ who: 'claude', text: `scored ${c.seat.score}` })
+      else steps.push({ who: 'codex', text: c.seat ? `scored ${scoreText(c.score)}` : 'scored (sealed)' })
+      if (c.seat) steps.push({ who: 'claude', text: `scored ${scoreText(c.seat.score)}` })
       continue
     }
     if (c.kind === 'compare') steps.push({ who: 'claude', text: `sent its ${plural(head.mine?.length ?? 0, 'finding')}` })
@@ -5023,7 +5036,7 @@ async function announce($: Engine, c: Consult) {
   if (c.status === 'stopped') toast = ''
   else if (c.status !== 'done') toast = `Codex could not finish — ${cut(c.title, 40)}`
   else if (council && !c.seat) toast = `Codex has scored round ${council.n} · sealed until Claude's seat is in — ${cut(c.title, 30)}`
-  else if (council) toast = council.phase === 'passed' ? `The council passes · Claude ${c.seat?.score} · Codex ${c.score} — ${cut(c.title, 34)}` : `Council round ${council.n} · Claude ${c.seat?.score} · Codex ${c.score} · bar ${council.target} — ${cut(c.title, 30)}`
+  else if (council) toast = council.phase === 'passed' ? `The council passes · ${bothScores({ claude: c.seat?.score, codex: c.score })} — ${cut(c.title, 34)}` : `Council round ${council.n} · ${bothScores({ claude: c.seat?.score, codex: c.score })} · bar ${council.target} — ${cut(c.title, 30)}`
   else if (c.kind === 'task' && codexBuilds && loop)
     toast = c.task?.state === 'ready' ? `Codex finished round ${loop.round} · Claude reviews it — ${cut(c.title, 30)}` : `Codex changed nothing in round ${loop.round} — ${cut(c.title, 34)}`
   else if (c.kind === 'task') toast = c.task?.state === 'ready' ? `Codex finished the task · Claude checks it and applies it — ${cut(c.title, 32)}` : `Codex made no changes — ${cut(c.title, 40)}`
@@ -6983,7 +6996,7 @@ function councilStage(list: Consult[], c: Consult, at: number): Stage {
     phase: 'done',
     headline: councilHeadline(s),
     sub: councilWords(s),
-    stamp: s.phase === 'passed' ? 'Passed' : m?.revealed ? `${m.claude} · ${m.codex}` : 'Sealed',
+    stamp: s.phase === 'passed' ? 'Passed' : m?.revealed ? `${scoreText(m.claude)} · ${scoreText(m.codex)}` : 'Sealed',
     stampColour: s.phase === 'passed' ? GOOD : low !== undefined ? (low >= s.target - 1 ? WARN : BAD) : '#9aa0a8',
     moment: s.phase === 'passed' ? 'spark' : undefined,
     claudeMood: s.phase === 'seat' || s.phase === 'fixing' ? 'busy' : undefined,
@@ -7838,7 +7851,7 @@ function seatFaces(s: CouncilState): { claude: CouncilSeatView; codex: CouncilSe
 /** The council's headline: what it comes to, in a line. */
 function councilHeadline(s: CouncilState) {
   const m = s.board[s.n - 1]
-  const both = m?.revealed ? `Claude ${m.claude} · Codex ${m.codex}` : ''
+  const both = m?.revealed ? bothScores(m) : ''
   switch (s.phase) {
     case 'passed':
       return `${both} — the council passes`
@@ -7955,7 +7968,7 @@ function councilScene(s: CouncilState, where: string) {
 
 /** What the board says aloud, for someone who cannot see it. */
 function councilAlt(s: CouncilState) {
-  const rounds = s.board.filter(m => m.revealed).map(m => `round ${m.round}: Claude ${m.claude}, Codex ${m.codex}`)
+  const rounds = s.board.filter(m => m.revealed).map(m => `round ${m.round}: Claude ${scoreText(m.claude)}, Codex ${scoreText(m.codex)}`)
   return `Council, bar ${s.target} out of 10, round ${s.n} of ${s.max}. ${councilHeadline(s)}.${rounds.length ? ` Scores so far: ${rounds.join('; ')}.` : ''}`
 }
 
@@ -7966,7 +7979,7 @@ function CouncilBoardView(el: Elements, surface: string, list: Consult[], s: Cou
     const m = s.board.filter(x => x.revealed)
     return (
       <Text color={s.phase === 'passed' ? GOOD : VIOLET} bold wrap="wrap">
-        {`⚖ Council · bar ${s.target} · round ${s.n} of ${s.max} — ${councilHeadline(s)}${m.length > 1 ? ` (${m.map(x => `${x.claude}/${x.codex}`).join(' → ')})` : ''}`}
+        {`⚖ Council · bar ${s.target} · round ${s.n} of ${s.max} — ${councilHeadline(s)}${m.length > 1 ? ` (${m.map(x => `${scoreText(x.claude)}/${scoreText(x.codex)}`).join(' → ')})` : ''}`}
       </Text>
     )
   }
@@ -7985,7 +7998,7 @@ function CouncilChip(el: Elements, surface: string, s: CouncilState, size = 18) 
   const m = [...s.board].reverse().find(x => x.revealed)
   if (surface === 'terminal' || !Svg) return <Text color={s.phase === 'passed' ? GOOD : VIOLET}>⚖</Text>
   const svg = councilChipSvg({ claude: m?.claude, codex: m?.codex, target: s.target, passed: s.phase === 'passed' }, size)
-  return <Svg source={svg} alt={m ? `Claude ${m.claude}, Codex ${m.codex}, bar ${s.target}` : `Council, bar ${s.target}`} width={svgSize(svg)?.width ?? size * 2} height={size} />
+  return <Svg source={svg} alt={m ? `Claude ${scoreText(m.claude)}, Codex ${scoreText(m.codex)}, bar ${s.target}` : `Council, bar ${s.target}`} width={svgSize(svg)?.width ?? size * 2} height={size} />
 }
 
 /** The person's moves on a council: more rounds, end it, copy its scoreboard, run a failed round again. */
@@ -8084,7 +8097,7 @@ function CouncilRound($: Engine, el: Elements, list: Consult[], s: CouncilState,
   const peek = opened.includes(`peek:${c.id}`)
   const mine = (s.head.mine ?? []).filter(f => c.seat?.findings.includes(f.id))
   const titleOf = (id: string) => allFindings(list, s.head.thread).find(x => x.f.id === id)?.f.title
-  const scoreText = (score: number | undefined) => (typeof score === 'number' ? `${score}/10` : '')
+  const outOf10 = (score: number | undefined) => (typeof score === 'number' ? `${scoreText(score)}/10` : '')
   const findingsOf = (fs: Finding[]) =>
     fs.map(f => FindingView($, el, f, { thread: s.head.thread, full: true, open: opened.includes(`${s.head.thread}:${f.id}`), mine: f.id.startsWith('C') }))
   const codexShown = mark.revealed || peek
@@ -8098,11 +8111,11 @@ function CouncilRound($: Engine, el: Elements, list: Consult[], s: CouncilState,
         {mark.revealed ? (
           <Text>
             <Text color={CLAUDE} bold>
-              Claude {mark.claude}
+              Claude {scoreText(mark.claude)}
             </Text>
             <Text dimColor> · </Text>
             <Text color={CODEX} bold>
-              Codex {mark.codex}
+              Codex {scoreText(mark.codex)}
             </Text>
           </Text>
         ) : (
@@ -8132,7 +8145,7 @@ function CouncilRound($: Engine, el: Elements, list: Consult[], s: CouncilState,
       {c.seat && (
         <Box flexDirection="column" paddingLeft={1} marginTop={1}>
           {Said(el, CLAUDE, `council-seat-${c.id}`, [
-            Speaker(el, 'claude', 'user', `its seat · ${mark.revealed ? scoreText(c.seat.score) : 'sealed until Codex is in'}`),
+            Speaker(el, 'claude', 'user', `its seat · ${mark.revealed ? outOf10(c.seat.score) : 'sealed until Codex is in'}`),
             mark.revealed && <Text wrap="wrap">{c.seat.summary}</Text>,
             mark.revealed && c.seat.gap && <Text dimColor wrap="wrap">To reach {s.target}: {c.seat.gap}</Text>,
           ])}
@@ -8143,7 +8156,7 @@ function CouncilRound($: Engine, el: Elements, list: Consult[], s: CouncilState,
         <Box flexDirection="column" paddingLeft={1} marginTop={1}>
           {codexShown ? (
             Said(el, CODEX, `council-codex-${c.id}`, [
-              Speaker(el, 'codex', 'user', `${scoreText(c.score)}${!mark.revealed ? ' · peeked (Claude has not seen it)' : ''}`),
+              Speaker(el, 'codex', 'user', `${outOf10(c.score)}${!mark.revealed ? ' · peeked (Claude has not seen it)' : ''}`),
               c.summary && <Text wrap="wrap">{c.summary}</Text>,
               c.gap && <Text dimColor wrap="wrap">To reach {s.target}: {c.gap}</Text>,
               Responses(el, c, true),
@@ -8262,9 +8275,9 @@ export async function councilCard($: Engine, e: any, next: (e: any) => Promise<a
       <Box flexDirection="row" gap={1} flexWrap="wrap" alignItems="center">
         {Speaker(el, 'claude', 'codex', `its seat · council ${thread}, round ${i + 1}`)}
         <Text bold color={CLAUDE}>
-          {Number.isFinite(Number(input.score)) ? `${clampScore(input.score)}/10` : ''}
+          {Number.isFinite(Number(input.score)) ? `${scoreText(clampScore(input.score))}/10` : ''}
         </Text>
-        <Text dimColor>{revealed ? `· revealed: Codex ${s.board[i]?.codex}` : '· sealed until Codex is in'}</Text>
+        <Text dimColor>{revealed ? `· revealed: Codex ${scoreText(s.board[i]?.codex)}` : '· sealed until Codex is in'}</Text>
       </Box>
     )
   }
@@ -8300,7 +8313,7 @@ export async function councilCard($: Engine, e: any, next: (e: any) => Promise<a
         </Box>
         <Text dimColor>
           round {i + 1}
-          {m?.revealed ? ` · Claude ${m.claude} · Codex ${m.codex}` : ''}
+          {m?.revealed ? ` · ${bothScores(m)}` : ''}
         </Text>
         <Button key={`expand-${c.id}`} plain dimColor label="Show" onPress={() => void toggleIn($, 'expanded', cardKey)} />
       </Box>
@@ -9452,7 +9465,7 @@ function bandVerdict(list: Consult[], c: Consult): BandResult {
     return {
       tag: 'Council',
       title: head.title,
-      stamp: passed ? 'Passed' : m?.revealed ? `Claude ${m.claude} · Codex ${m.codex}` : council.phase === 'ended' ? 'Ended' : 'Sealed',
+      stamp: passed ? 'Passed' : m?.revealed ? bothScores(m) : council.phase === 'ended' ? 'Ended' : 'Sealed',
       kind: passed ? 'approve' : m?.revealed ? 'changes_needed' : 'answer',
       colour: passed ? GOOD : m?.revealed ? WARN : VIOLET,
       moment: passed ? 'spark' : undefined,
@@ -11731,7 +11744,7 @@ function StartPanel($: Engine, el: Elements, list: Consult[], pending: Pending, 
               <Select
                 key="confirm-council-bar"
                 value={String(pending.target ?? COUNCIL_TARGET)}
-                options={[10, 9, 8, 7, 6].map(n => ({ value: String(n), label: `${n} / 10` }))}
+                options={[10, 9.5, 9, 8.5, 8, 7.5, 7, 6].map(n => ({ value: String(n), label: `${n} / 10` }))}
                 onSelect={(value: string) => void setView($, { start: JSON.stringify({ ...pending, target: Number(value) }) })}
               />
               <Text dimColor>both seats must reach it</Text>
@@ -13089,7 +13102,7 @@ export const register: Register = (on, options) => {
     await offer({
       name: 'council',
       description:
-        "Convene a council on a piece of work: you and Codex each review it on your own and score it out of 10, round after round, until every seat reaches the user's bar. Use it when the user asks for a council, in whatever words (\"council this\", \"get it to 9/10\", \"score it until it's ready\"); never on your own initiative.\n\n" +
+        "Convene a council on a piece of work: you and Codex each review it on your own and score it out of 10, round after round, until every seat reaches the user's bar. Use it when the user asks for a council, in whatever words (\"council this\", \"get it to 9/10\", \"get it to 9.5\", \"score it until it's ready\"); never on your own initiative.\n\n" +
         'How it goes:\n' +
         '- Before you start it, fix what you already know is wrong and run the checks: the council scores the work as it is.\n' +
         `- action "start" (target: the user's bar, default ${COUNCIL_TARGET}; rounds: the most it sits, default ${COUNCIL_ROUNDS}): Codex scores round 1 while you take your seat, reviewing on your own (best in a fresh read-only subagent, so you are not scoring your own work). Hand your seat in with action "score". Codex's score stays sealed from you until yours is in; then both are revealed together and the user sees the scoreboard.\n` +
@@ -13106,7 +13119,7 @@ export const register: Register = (on, options) => {
           request: { type: 'string', description: 'start: what the council reviews, and what the work set out to do, as to a senior colleague.' },
           brief: { type: 'string', description: 'start: what the work set out to do, the yardstick both seats score against, when request says more than that. Default: request.' },
           title: { type: 'string', description: 'start: a short name (up to ~60 characters), shown on the scoreboard.' },
-          target: { type: 'integer', minimum: 1, maximum: 10, description: `start: the bar every seat must reach, out of 10. The user's number when they give one; default ${COUNCIL_TARGET}.` },
+          target: { type: 'number', minimum: 1, maximum: 10, description: `start: the bar every seat must reach, out of 10, to one decimal place at most (9, or 9.5). The user's number when they give one; default ${COUNCIL_TARGET}.` },
           rounds: { type: 'integer', minimum: 1, maximum: 10, description: `start: the most rounds it sits before it stops and asks. Default ${COUNCIL_ROUNDS}.` },
           scope: {
             type: 'string',
@@ -13131,7 +13144,7 @@ export const register: Register = (on, options) => {
           lens: { type: 'string', enum: Object.keys(LENSES), description: 'start: what the council looks hardest at. Default: everything; ux for a page or screenshots.' },
           model: { type: 'string', description: "start: Codex model. Default: the user's pick." },
           effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], description: "start: reasoning effort, the same every round. Default: the user's pick." },
-          score: { type: 'integer', minimum: 0, maximum: 10, description: "score: your seat's score out of 10, on the council's scale." },
+          score: { type: 'number', minimum: 0, maximum: 10, description: "score: your seat's score out of 10, to one decimal place (like 8.8), on the council's scale." },
           summary: { type: 'string', description: "score: your seat's view in two to four sentences." },
           gap: { type: 'string', description: 'score: what keeps it from the bar, in one sentence; empty when it reaches it.' },
           findings: {
@@ -13525,7 +13538,7 @@ export const register: Register = (on, options) => {
     if (action !== 'start' && !id) return { deny: `Name the council: council "K7Q2", from the message that started it.` }
     const parked = (Array.isArray(a.parked) ? a.parked : []).map(x => ({ title: String(x?.title ?? '').trim(), detail: String(x?.detail ?? '').trim() || undefined })).filter(x => x.title)
     if (action === 'score') {
-      if (!Number.isFinite(Number(a.score))) return { deny: 'Give your seat\'s score: score, a whole number from 0 to 10.' }
+      if (!Number.isFinite(Number(a.score))) return { deny: 'Give your seat\'s score: score, a number from 0 to 10, to one decimal place.' }
       const found = (Array.isArray(a.findings) ? a.findings : []).map(x => ({
         severity: (x.severity === 'high' || x.severity === 'low' ? x.severity : 'medium') as Finding['severity'],
         title: String(x.title ?? '').trim() || 'Untitled',
@@ -13535,11 +13548,11 @@ export const register: Register = (on, options) => {
         suggestion: x.suggestion?.trim() || undefined,
       }))
       try {
-        const text = await submitSeat($, id, { score: Number(a.score), summary: String(a.summary ?? '').trim() || `Scored ${clampScore(a.score)}/10.`, gap: a.gap, findings: found, parked, toolUseId: e.tool_use_id })
+        const text = await submitSeat($, id, { score: Number(a.score), summary: String(a.summary ?? '').trim() || `Scored ${scoreText(clampScore(a.score))}/10.`, gap: a.gap, findings: found, parked, toolUseId: e.tool_use_id })
         const s = councilState(await all($), id)
         if (s?.revealed) {
           const m = s.board[s.n - 1] as CouncilMark
-          $.ui.toast(s.phase === 'passed' ? `The council passes · Claude ${m.claude} · Codex ${m.codex}` : `Council round ${s.n} · Claude ${m.claude} · Codex ${m.codex} · bar ${s.target}`, { timeoutMs: 6000 })
+          $.ui.toast(s.phase === 'passed' ? `The council passes · ${bothScores(m)}` : `Council round ${s.n} · ${bothScores(m)} · bar ${s.target}`, { timeoutMs: 6000 })
           await markHanded($, [s.last.id])
         }
         return { result: text }
@@ -13603,7 +13616,7 @@ export const register: Register = (on, options) => {
     if (!a.go_ahead && (size.files > 40 || size.lines > 4000)) {
       return { deny: `That is a big change (${scope?.diffstat}): every council round would take long and use a lot of the user's Codex quota. Ask the user whether to go ahead or narrow it (scope files, a commit); if they say go ahead, call again with go_ahead: true.` }
     }
-    const target = Number.isFinite(Number(a.target)) ? Math.min(10, Math.max(1, Math.round(Number(a.target)))) : COUNCIL_TARGET
+    const target = Number.isFinite(Number(a.target)) ? Math.min(10, Math.max(1, oneDecimal(a.target))) : COUNCIL_TARGET
     const rounds = Number.isFinite(Number(a.rounds)) ? Math.min(10, Math.max(1, Math.round(Number(a.rounds)))) : COUNCIL_ROUNDS
     const lens = a.lens && a.lens in LENSES ? (a.lens === 'general' ? undefined : (a.lens as Lens)) : visual ? 'ux' : undefined
     let started: { consult: Consult; prompt: string }

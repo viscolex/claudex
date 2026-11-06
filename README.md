@@ -7,7 +7,7 @@
 Reviews and second opinions, councils that score the work until it's ready, tasks in their own worktree, build loops, shared jobs and pictures:<br>
 Codex on your ChatGPT plan, brought into Claude Code, live in the chat.
 
-[![version](https://img.shields.io/badge/version-2.8.0-4c8eda?style=flat-square)](.claude-plugin/plugin.json)
+[![version](https://img.shields.io/badge/version-2.8.1-4c8eda?style=flat-square)](.claude-plugin/plugin.json)
 [![Codex](https://img.shields.io/badge/checked_with_Codex-0.164%E2%80%930.166-8B93F8?style=flat-square)](#requirements)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-mod-D97757?style=flat-square&logo=claude&logoColor=white)](https://claude.com/claude-code)
 [![Codex](https://img.shields.io/badge/Codex-ChatGPT_plan-8B93F8?style=flat-square&logo=openai&logoColor=white)](https://openai.com/codex)
@@ -40,7 +40,8 @@ stage above the prompt.
 
 ### ⚖️ Councils
 Say **"council this until you both give it 9/10"**. Claude and Codex each review the work on
-their own and give it a **score out of 10**, sealed until both are in, then revealed together.
+their own and give it a **score out of 10, to one decimal** (8.8, say), sealed until both are in,
+then revealed together.
 Below your bar, Claude fixes what's in scope, runs the checks, and they score it again, round
 after round, until both reach it. Ideas beyond the brief are **parked, not taken on**, so the
 scope stays where it is. For UI work, give it a page: Claudex **screenshots it at desktop and
@@ -134,7 +135,7 @@ Codex only runs when you ask for it. Claude never calls it on its own initiative
 
 <br><br>
 
-<img src="docs/images/council.svg" alt="A council passing in round 3: Claude holds up a 9 and Codex a 10, and their scores climb across three rounds to the bar of 9" width="860">
+<img src="docs/images/council.svg" alt="A council passing in round 3: Claude holds up a 9.1 and Codex a 9.4, and their scores climb across three rounds to the bar of 9" width="860">
 
 <sub><b>A council.</b> Each seat's score stays face down until both are in, then both paddles flip at once. Round by round, the scores climb toward your bar; when both clear it, it turns green.</sub>
 
@@ -430,15 +431,17 @@ nothing reaches your files until Claude reviews the diff and applies it. Every a
 
 Both seats score on one scale: **10** nothing left worth changing for what it set out to do,
 **9** ready to ship, **8** good with a few minor issues, **7** works but needs fixes before it
-ships, **5–6** significant problems, **4 or less** major problems. They score the work as it
-stands against its brief, and park ideas that go beyond it.
+ships, **5–6** significant problems, **4 or less** major problems. Scores carry one decimal place,
+which says where the work sits between those: 8.8 is nearly ready to ship, 8.2 only just good. Your
+bar can too, like 9.5, and a tenth short of it doesn't pass. They score the work as it stands
+against its brief, and park ideas that go beyond it.
 
 Claude's seat is best taken by a fresh, read-only Claude subagent, so it doesn't score work
 Claude just wrote. Codex keeps its own context from round to round, so it sees what changed.
 
 A council stops when **every seat reaches your bar**. If it runs out of rounds, or the lower
-score hasn't risen in two rounds, Claude asks you before going on; **Sit 2 more rounds** in the
-pane or on the band says yes. **End the council** stops it at any time. Each round is one Codex
+score gains no more than 0.1 a round for two rounds, Claude asks you before going on; **Sit 2 more
+rounds** in the pane or on the band says yes. **End the council** stops it at any time. Each round is one Codex
 run.
 </details>
 

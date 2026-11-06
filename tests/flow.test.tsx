@@ -1,5 +1,5 @@
 import { expect, mock, test } from 'claude-code/testing'
-import { councilState } from '../hooks/register'
+import { clampScore, councilState } from '../hooks/register'
 import type { CodexConsult } from '../types'
 
 const ASK = 'mcp__claudex__ask'
@@ -2276,7 +2276,7 @@ test('a council: each seat scores on its own, sealed until both are in; below th
   await w.clock.advance(1500)
   const sealedNote = w.told.find(t => t.includes('stay sealed until your seat is in')) as string
   expect(sealedNote).toBeDefined()
-  expect(sealedNote).not.toContain('7/10')
+  expect(sealedNote).not.toContain('7.0/10')
   const sealed = await $.ui.mount({ plugin: 'claudex', surface: 'terminal', ...card('tu-council', COUNCIL) })
   expect(await sealed.find({ type: 'Text', text: /Council · bar 9 · round 1 of 4 — Codex has scored · Claude takes its seat/ })).toBeDefined()
   expect(await sealed.find({ type: 'Text', text: /Window never resets/ })).toBeUndefined()
@@ -2297,14 +2297,14 @@ test('a council: each seat scores on its own, sealed until both are in; below th
     } as never),
   )
   expect(reveal).toContain('the reveal')
-  expect(reveal).toContain('Your seat: 8/10')
-  expect(reveal).toContain('Codex (gpt-6.1-sol): 7/10')
+  expect(reveal).toContain('Your seat: 8.0/10')
+  expect(reveal).toContain('Codex (gpt-6.1-sol): 7.0/10')
   expect(reveal).toContain('F1 [high] Window never resets')
   expect(reveal).toContain('C1 [medium] Reset window untested')
   expect(reveal).toContain('A dashboard of per-user quotas (Codex)')
   expect(reveal).toContain('Burst allowance (your seat)')
   expect(reveal).toContain('| Claude')
-  expect(reveal).toContain('| 8/10 |')
+  expect(reveal).toContain('| 8.0/10 |')
   expect(reveal).toContain('action "next"')
   expect(reveal).toContain('take on no parked idea')
 
@@ -2314,7 +2314,7 @@ test('a council: each seat scores on its own, sealed until both are in; below th
   await band.unmount()
   const pane = await $.ui.mount({ plugin: 'claudex', surface: 'terminal', ...PANE })
   expect(await pane.find({ type: 'Text', text: /Claude: fixing after round 1/ })).toBeDefined()
-  expect(await pane.find({ type: 'Text', text: /Claude 8 · Codex 7 · bar 9 · round 1 of 4/ })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: /Claude 8\.0 · Codex 7\.0 · bar 9 · round 1 of 4/ })).toBeDefined()
   await pane.unmount()
 
   // An unknown finding is refused; the fixes start round 2, which Codex scores in its own thread, told what changed.
@@ -2328,7 +2328,7 @@ test('a council: each seat scores on its own, sealed until both are in; below th
   expect(prompt2).toContain('What Claude says it fixed')
   expect(prompt2).toContain('F1 (Window never resets)')
   expect(prompt2).toContain('npm test: 41 passed')
-  expect(prompt2).not.toContain('8/10')
+  expect(prompt2).not.toContain('8.0/10')
 
   // Codex scores 9 and concedes F1; Claude's 9 makes the council pass.
   const passed = said(await $.tool.call({ tool: COUNCIL, tool_use_id: 'tu-seat-2', action: 'score', council: id, score: 9, summary: 'Ready to ship.' } as never))
@@ -2336,7 +2336,7 @@ test('a council: each seat scores on its own, sealed until both are in; below th
   expect(passed).not.toContain('Still open across the council')
   expect(passed).toContain('## Council review')
   expect(passed).toContain('Rounds: 2 · Bar: 9/10 · Passed')
-  expect(passed).toContain('| Codex GPT-6.1-Sol | 7/10 | 9/10 |')
+  expect(passed).toContain('| Codex GPT-6.1-Sol | 7.0/10 | 9.0/10 |')
   expect(passed).toContain('pull request')
   expect(said(await $.tool.call({ tool: COUNCIL, action: 'next', council: id } as never))).toContain('has passed')
 
@@ -2345,13 +2345,13 @@ test('a council: each seat scores on its own, sealed until both are in; below th
   expect(await card2.find({ type: 'Text', text: /the council passes/ })).toBeDefined()
   await card2.unmount()
   const board = await $.ui.mount({ plugin: 'claudex', surface: 'desktop', ...card('tu-council-2', COUNCIL) })
-  expect(String((await board.find({ type: 'Svg' }))?.props?.alt)).toContain('Scores so far: round 1: Claude 8, Codex 7; round 2: Claude 9, Codex 9')
+  expect(String((await board.find({ type: 'Svg' }))?.props?.alt)).toContain('Scores so far: round 1: Claude 8.0, Codex 7.0; round 2: Claude 9.0, Codex 9.0')
   await board.unmount()
   const seatCard = await $.ui.mount({ plugin: 'claudex', surface: 'terminal', component: 'ToolUse', requestId: 'tu-seat-2', props: { tool_use_id: 'tu-seat-2', tool: COUNCIL, input: { action: 'score', council: id, score: 9 }, isRunning: false, isErrored: false, isInterrupted: false } } as never)
-  expect(await seatCard.find({ type: 'Text', text: /revealed: Codex 9/ })).toBeDefined()
+  expect(await seatCard.find({ type: 'Text', text: /revealed: Codex 9\.0/ })).toBeDefined()
   await seatCard.unmount()
   const card1 = await $.ui.mount({ plugin: 'claudex', surface: 'terminal', ...card('tu-council', COUNCIL) })
-  expect(await card1.find({ type: 'Text', text: /round 1 · Claude 8 · Codex 7/ })).toBeDefined()
+  expect(await card1.find({ type: 'Text', text: /round 1 · Claude 8\.0 · Codex 7\.0/ })).toBeDefined()
   await card1.unmount()
 })
 
@@ -2385,7 +2385,7 @@ test('a council out of rounds asks first: the person grants more from the pane, 
   await w.clock.settle()
   // Three rounds at 6: the scores have stalled, so Claude checks in before another.
   const stalled = said(await $.tool.call({ tool: COUNCIL, action: 'score', council: id, score: 6, summary: 'No better.' } as never))
-  expect(stalled).toContain('has not risen in 2 rounds')
+  expect(stalled).toContain('has gained no more than 0.1 a round for 2 rounds')
   expect(said(await $.tool.call({ tool: COUNCIL, action: 'next', council: id } as never))).toContain('stalled')
   const ended = said(await $.tool.call({ tool: COUNCIL, action: 'end', council: id, reason: 'The rest needs a redesign.' } as never))
   expect(ended).toContain('is closed')
@@ -2399,12 +2399,12 @@ test('the pane convenes a council: the bar and the rounds picked there reach Cla
   const pane = await $.ui.mount({ plugin: 'claudex', surface: 'desktop', ...PANE })
   await pane.press({ key: 'new-New' })
   await pane.press({ key: 'start-pick-council' })
-  await pane.select({ key: 'confirm-council-bar', value: '8' })
+  await pane.select({ key: 'confirm-council-bar', value: '8.5' })
   await pane.select({ key: 'confirm-council-rounds', value: '3' })
   await pane.press({ key: 'confirm-go' })
   expect(w.told.at(-1)).toContain('Convene a council on my uncommitted changes')
-  expect(w.told.at(-1)).toContain('until both reach 8, up to 3 rounds')
-  expect(w.told.at(-1)).toContain('action "start", target: 8, rounds: 3, scope: "uncommitted"')
+  expect(w.told.at(-1)).toContain('until both reach 8.5, up to 3 rounds')
+  expect(w.told.at(-1)).toContain('action "start", target: 8.5, rounds: 3, scope: "uncommitted"')
   expect(w.spawns.length).toBe(0)
   await pane.unmount()
 })
@@ -2438,6 +2438,63 @@ test('a council stalls only when the lower score rose in none of the last two ro
   expect(councilState(council([6, 7]), 'K')?.phase).toBe('fixing')
   expect(councilState(council([6, 6, 6], 3), 'K')?.phase).toBe('limit')
   expect(councilState(council([7, 9]), 'K')?.phase).toBe('passed')
+  // With decimals, a tenth is noise: it takes two to count as rising.
+  expect(councilState(council([8.1, 8.2, 8.3]), 'K')?.phase).toBe('stalled')
+  expect(councilState(council([8.2, 8.1, 8.2]), 'K')?.phase).toBe('stalled')
+  expect(councilState(council([8.1, 8.3, 8.4]), 'K')?.phase).toBe('fixing')
+  expect(councilState(council([8.1, 8.2, 8.4]), 'K')?.phase).toBe('fixing')
+  // A tenth short of the bar is below it; on the bar is through it.
+  expect(councilState(council([8.9]), 'K')?.phase).toBe('fixing')
+  expect(councilState(council([9.0]), 'K')?.phase).toBe('passed')
+})
+
+test('a score keeps one decimal place, whatever came in', () => {
+  expect(clampScore(8.8)).toBe(8.8)
+  expect(clampScore(8.84)).toBe(8.8)
+  expect(clampScore(8.86)).toBe(8.9)
+  expect(clampScore('7')).toBe(7)
+  expect(clampScore(11)).toBe(10)
+  expect(clampScore(-1)).toBe(0)
+  expect(clampScore('nine')).toBe(0)
+})
+
+test('a council in tenths: the bar can be 9.5, a tenth short does not pass, and every surface writes the decimal', { timeoutMs: 30_000 }, async ($, on) => {
+  const w = world(on, { councilScores: [9.52, 9.6] })
+  await $.session.start({ cwd: 'C:\\repo', surface: 'desktop', isInteractive: true } as never)
+  w.gates.review?.open()
+  const started = said(await $.tool.call({ tool: COUNCIL, tool_use_id: 'tu-tenths', action: 'start', request: 'Polish the limiter.', target: 9.54 } as never))
+  expect(started).toContain('bar 9.5/10')
+  const id = started.match(/Council (\w{4}) sits/)?.[1] as string
+  expect(started).toContain('to one decimal place (like 8.8)')
+  await w.clock.settle()
+  const prompt = w.inputs[0] as string
+  expect(prompt).toContain('Score it out of 10, to one decimal place, on this scale:')
+  expect(prompt).toContain('- score: a number from 0 to 10, to one decimal place, like 8.8.')
+  expect(prompt).toContain('every seat scores at least 9.5')
+  expect(prompt).not.toContain('whole number')
+
+  // Codex rounds to 9.5, on the bar; Claude's 9.4 is a tenth short, so the council does not pass.
+  const below = said(await $.tool.call({ tool: COUNCIL, tool_use_id: 'tu-tenths-1', action: 'score', council: id, score: 9.44, summary: 'Nearly there.' } as never))
+  expect(below).toContain('Your seat: 9.4/10')
+  expect(below).toContain('Codex (gpt-6.1-sol): 9.5/10')
+  expect(below).toContain('| 9.4/10 |')
+  expect(below).toContain('Bar: 9.5/10')
+  expect(below).toContain('Below the bar.')
+  const pane = await $.ui.mount({ plugin: 'claudex', surface: 'terminal', ...PANE })
+  expect(await pane.find({ type: 'Text', text: /Claude 9\.4 · Codex 9\.5 · bar 9\.5 · round 1 of 5/ })).toBeDefined()
+  await pane.unmount()
+
+  // Claude's seat lands exactly on the bar next round: both are through, and it passes.
+  await $.tool.call({ tool: COUNCIL, action: 'next', council: id, fixed: ['F1'] } as never)
+  await w.clock.settle()
+  const passed = said(await $.tool.call({ tool: COUNCIL, tool_use_id: 'tu-tenths-2', action: 'score', council: id, score: 9.5, summary: 'Ready.' } as never))
+  expect(passed).toContain('Every seat is at 9.5 or more')
+  expect(passed).toContain('| Codex GPT-6.1-Sol | 9.5/10 | 9.6/10 |')
+
+  // A ten stays a ten.
+  const seat = await $.ui.mount({ plugin: 'claudex', surface: 'terminal', component: 'ToolUse', requestId: 'tu-ten', props: { tool_use_id: 'tu-ten', tool: COUNCIL, input: { action: 'score', council: id, score: 10 }, isRunning: false, isErrored: false, verbose: false } } as never)
+  expect(await seat.find({ type: 'Text', text: /10\/10/ })).toBeDefined()
+  await seat.unmount()
 })
 
 test('a council on a page: every round screenshots it afresh for both seats, with Claude\'s own pictures beside them', { timeoutMs: 30_000 }, async ($, on) => {
